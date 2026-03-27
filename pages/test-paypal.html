@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test PayPal Credentials</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #0a0a0f; color: #fff; }
+        input, button { padding: 10px; margin: 5px; }
+        input { width: 400px; background: #111; color: #fff; border: 1px solid #333; }
+        button { background: #0070ba; color: white; border: none; cursor: pointer; }
+        pre { background: #111; padding: 10px; border-radius: 5px; overflow: auto; }
+        .success { color: #10b981; }
+        .error { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <h2>Test PayPal Sandbox Credentials</h2>
+    <div>
+        <input type="text" id="clientId" placeholder="Client ID" value="Abc5ZXcxcI3Yo15UmRyHfeR7EmDYhbPgt6JrYiaycVU0Ffex_g3rkLTrz1R_ZY7n1pNd5g4qKL9cttyY" style="width: 500px;">
+        <br>
+        <input type="password" id="clientSecret" placeholder="Client Secret" value="EBmJiZoJfsYDZ9wlIfFYGRPZCH5hsUCfofHJqc-o9-zDqQzAkK-RNANbNn184JlkHPurjqgWAFiQsbs_" style="width: 500px;">
+        <br>
+        <button id="testBtn">Test Credentials</button>
+    </div>
+    <div id="result" style="margin-top: 20px;"></div>
+
+    <script>
+        $('#testBtn').click(function() {
+            const clientId = $('#clientId').val();
+            const clientSecret = $('#clientSecret').val();
+            
+            $('#result').html('<p>Testing credentials...</p>');
+            
+            $.ajax({
+                url: '/gate/paypal-key-sandbox.php?test_creds=1&client_id=' + encodeURIComponent(clientId) + '&client_secret=' + encodeURIComponent(clientSecret),
+                method: 'GET',
+                success: function(response) {
+                    if (response.status === 'valid') {
+                        $('#result').html('<div class="success">✓ ' + response.message + '</div><pre>' + JSON.stringify(response, null, 2) + '</pre>');
+                    } else {
+                        $('#result').html('<div class="error">✗ ' + response.message + '</div><pre>' + JSON.stringify(response, null, 2) + '</pre>');
+                    }
+                },
+                error: function(xhr) {
+                    $('#result').html('<div class="error">Error: ' + xhr.status + ' ' + xhr.statusText + '</div>');
+                }
+            });
+        });
+    </script>
+</body>
+</html>
