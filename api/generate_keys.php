@@ -31,7 +31,7 @@ if (!isset($packages[$packageType])) {
 
 $package = $packages[$packageType];
 $generatedKeys = [];
-$pdo = getDB();
+$pdo = getMongoDB();
 
 if (!$pdo) {
     echo json_encode(['success' => false, 'error' => 'Database connection failed']);

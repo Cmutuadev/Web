@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        $webhookUrl = 'http://' . $_SERVER['HTTP_HOST'] . '/api/telegram-bot.php';
+        $webhookUrl = 'https://' . $_SERVER['HTTP_HOST'] . '/api/telegram-bot.php';
         
         $url = "https://api.telegram.org/bot{$botToken}/setWebhook?url=" . urlencode($webhookUrl);
         

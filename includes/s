@@ -1,0 +1,357 @@
+<?php
+$currentPage = $_SERVER['REQUEST_URI'];
+$currentPage = strtok($currentPage, '?');
+$isAdmin = isAdmin();
+$username = $_SESSION['user']['name'];
+
+// Load user's custom gates from database
+$userCustomGates = [];
+$db = getMongoDB();
+if ($db) {
+    $cursor = $db->user_gates->find(['username' => $username, 'enabled' => 1]);
+    foreach ($cursor as $doc) {
+        $userCustomGates[] = [
+            'key' => (string)$doc['_id'],
+            'label' => $doc['label'],
+            'api_endpoint' => $doc['api_endpoint'],
+            'credit_cost' => $doc['credit_cost'] ?? 1
+        ];
+    }
+}
+?>
+
+<div class="sidebar" id="sidebar">
+    <!-- User Profile Section -->
+    <div class="sidebar-user">
+        <div class="sidebar-user-avatar">
+            <?php 
+            $initials = '';
+            $words = explode(' ', trim($_SESSION['user']['display_name'] ?? $_SESSION['user']['name']));
+            foreach ($words as $word) {
+                if (!empty($word)) {
+                    $initials .= strtoupper(substr($word, 0, 1));
+                    if (strlen($initials) >= 2) break;
+                }
+            }
+            if (empty($initials)) $initials = 'U';
+            echo $initials;
+            ?>
+        </div>
+        <div class="sidebar-user-info">
+            <div class="sidebar-user-name"><?php echo htmlspecialchars($_SESSION['user']['display_name'] ?? $_SESSION['user']['name']); ?></div>
+            <div class="sidebar-user-plan"><?php echo ucfirst($_SESSION['user']['plan'] ?? 'Basic'); ?> Plan</div>
+        </div>
+    </div>
+
+    <nav class="sidebar-nav">
+        <!-- Dashboard -->
+        <a href="index.php?page=home" class="nav-item <?php echo strpos($currentPage, '?page=home') !== false || $currentPage === '/index.php' ? 'active' : ''; ?>">
+            <i class="fas fa-chart-line"></i>
+            <span>Dashboard</span>
+        </a>
+
+        <div class="nav-divider">PAYMENT</div>
+        
+        <!-- Top Up -->
+        <a href="topup.php" class="nav-item <?php echo $currentPage === '/topup.php' ? 'active' : ''; ?>">
+            <i class="fas fa-wallet"></i>
+            <span>Top Up Credits</span>
+            <?php if (getUserCredits() < 100): ?>
+            <span class="nav-badge">Low</span>
+            <?php endif; ?>
+        </a>
+
+        <div class="nav-divider">CHECKERS</div>
+
+        <!-- Auto Checkers -->
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('auto-checkers')">
+                <div class="nav-group-title">
+                    <i class="fas fa-bolt"></i>
+                    <span>Auto Checkers</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-auto-checkers"></i>
+            </div>
+            <div class="nav-group-content" id="group-auto-checkers">
+                <a href="index.php?page=shopify" class="nav-subitem"><i class="fab fa-shopify"></i> Shopify</a>
+                <a href="index.php?page=stripe-auth" class="nav-subitem"><i class="fab fa-stripe"></i> Stripe Auth</a>
+                <a href="index.php?page=razorpay" class="nav-subitem"><i class="fas fa-rupee-sign"></i> Razorpay</a>
+            </div>
+        </div>
+
+        <!-- Checkers -->
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('checkers')">
+                <div class="nav-group-title">
+                    <i class="fas fa-shield-alt"></i>
+                    <span>Checkers</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-checkers"></i>
+            </div>
+            <div class="nav-group-content" id="group-checkers">
+                <a href="index.php?page=auth" class="nav-subitem"><i class="fas fa-shield-alt"></i> Auth Checker</a>
+                <a href="index.php?page=charge" class="nav-subitem"><i class="fas fa-bolt"></i> Charge Checker</a>
+                <a href="index.php?page=auth-charge" class="nav-subitem"><i class="fas fa-layer-group"></i> Auth+Charge</a>
+            </div>
+        </div>
+
+        <!-- Hitters -->
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('hitters')">
+                <div class="nav-group-title">
+                    <i class="fas fa-bullseye"></i>
+                    <span>Hitters</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-hitters"></i>
+            </div>
+            <div class="nav-group-content" id="group-hitters">
+                <a href="index.php?page=stripe-checkout" class="nav-subitem"><i class="fas fa-shopping-cart"></i> Stripe Checkout</a>
+                <a href="index.php?page=stripe-invoice" class="nav-subitem"><i class="fas fa-file-invoice"></i> Stripe Invoice</a>
+                <a href="index.php?page=stripe-inbuilt" class="nav-subitem"><i class="fas fa-code"></i> Stripe Inbuilt</a>
+            </div>
+        </div>
+
+        <!-- Key Based -->
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('key-based')">
+                <div class="nav-group-title">
+                    <i class="fas fa-key"></i>
+                    <span>Key Based</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-key-based"></i>
+            </div>
+            <div class="nav-group-content" id="group-key-based">
+                <a href="index.php?page=key-stripe" class="nav-subitem"><i class="fab fa-stripe"></i> Stripe API</a>
+                <a href="index.php?page=key-paypal" class="nav-subitem"><i class="fab fa-paypal"></i> PayPal API</a>
+            </div>
+        </div>
+
+        <div class="nav-divider">TOOLS</div>
+
+        <!-- Tools -->
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('tools')">
+                <div class="nav-group-title">
+                    <i class="fas fa-tools"></i>
+                    <span>Tools</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-tools"></i>
+            </div>
+            <div class="nav-group-content" id="group-tools">
+                <a href="index.php?page=address-gen" class="nav-subitem"><i class="fas fa-address-card"></i> Address Generator</a>
+                <a href="index.php?page=bin-lookup" class="nav-subitem"><i class="fas fa-search"></i> BIN Lookup</a>
+                <a href="index.php?page=cc-cleaner" class="nav-subitem"><i class="fas fa-broom"></i> CC Cleaner</a>
+                <a href="index.php?page=cc-generator" class="nav-subitem"><i class="fas fa-magic"></i> CC Generator</a>
+                <a href="index.php?page=proxy-checker" class="nav-subitem"><i class="fas fa-globe"></i> Proxy Checker</a>
+                <a href="index.php?page=vbv-checker" class="nav-subitem"><i class="fas fa-shield-alt"></i> VBV Checker</a>
+            </div>
+        </div>
+
+        <!-- Preferences -->
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('preferences')">
+                <div class="nav-group-title">
+                    <i class="fas fa-sliders-h"></i>
+                    <span>Preferences</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-preferences"></i>
+            </div>
+            <div class="nav-group-content" id="group-preferences">
+                <a href="index.php?page=proxies" class="nav-subitem"><i class="fas fa-network-wired"></i> Proxies</a>
+                <a href="index.php?page=assets" class="nav-subitem"><i class="fas fa-database"></i> Assets</a>
+            </div>
+        </div>
+
+        <!-- CUSTOM APIS (User-added gates) -->
+        <?php if (!empty($userCustomGates)): ?>
+        <div class="nav-divider">CUSTOM APIS</div>
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('custom-apis')">
+                <div class="nav-group-title">
+                    <i class="fas fa-plus-circle"></i>
+                    <span>My Custom APIs</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-custom-apis"></i>
+            </div>
+            <div class="nav-group-content" id="group-custom-apis">
+                <?php foreach ($userCustomGates as $gate): ?>
+                <a href="index.php?page=universal&gate=custom_<?php echo $gate['key']; ?>" class="nav-subitem">
+                    <i class="fas fa-credit-card"></i> <?php echo htmlspecialchars($gate['label']); ?>
+                    <span class="nav-badge"><?php echo $gate['credit_cost']; ?> cr</span>
+                </a>
+                <?php endforeach; ?>
+                <a href="#" onclick="showAddCustomGateModal(); return false;" class="nav-subitem" style="color: var(--primary);">
+                    <i class="fas fa-plus"></i> <span>+ Add Custom API</span>
+                </a>
+            </div>
+        </div>
+        <?php else: ?>
+        <div class="nav-divider">CUSTOM APIS</div>
+        <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleGroup('custom-apis')">
+                <div class="nav-group-title">
+                    <i class="fas fa-plus-circle"></i>
+                    <span>My Custom APIs</span>
+                </div>
+                <i class="fas fa-chevron-down nav-group-arrow" id="arrow-custom-apis"></i>
+            </div>
+            <div class="nav-group-content" id="group-custom-apis">
+                <a href="#" onclick="showAddCustomGateModal(); return false;" class="nav-subitem" style="color: var(--primary);">
+                    <i class="fas fa-plus"></i> <span>+ Add Custom API</span>
+                </a>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <div class="nav-divider">PLATFORM</div>
+
+        <!-- ADMIN PANEL -->
+        <?php if ($isAdmin): ?>
+        <a href="adminaccess_panel.php" class="nav-item admin-item <?php echo strpos($currentPage, 'adminaccess_panel.php') !== false ? 'active' : ''; ?>">
+            <i class="fas fa-crown"></i>
+            <span>Admin Panel</span>
+            <span class="nav-badge admin">ADMIN</span>
+        </a>
+        <?php endif; ?>
+
+        <!-- Logout -->
+        <a href="?logout=1" class="nav-item logout-item">
+            <i class="fas fa-sign-out-alt"></i>
+            <span>Logout</span>
+        </a>
+    </nav>
+</div>
+
+<!-- Modal for adding custom API -->
+<div id="addCustomGateModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:2000; align-items:center; justify-content:center;">
+    <div style="background:var(--card-bg); border-radius:12px; padding:1.5rem; width:90%; max-width:400px; border:1px solid var(--border-color);">
+        <h3 style="margin-bottom:1rem;">Add Custom API</h3>
+        <form id="addCustomGateForm">
+            <div class="form-group">
+                <label>API Name</label>
+                <input type="text" id="customGateName" class="form-control" placeholder="e.g., My Stripe Gate" required>
+            </div>
+            <div class="form-group">
+                <label>API Endpoint (use {cc} for card)</label>
+                <input type="text" id="customGateEndpoint" class="form-control" placeholder="https://api.example.com?cc={cc}" required>
+            </div>
+            <div class="form-group">
+                <label>Credit Cost per Check</label>
+                <input type="number" id="customGateCost" class="form-control" value="1" required>
+            </div>
+            <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+                <button type="submit" class="btn btn-primary">Save API</button>
+                <button type="button" onclick="closeAddCustomGateModal()" class="btn btn-danger">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<style>
+/* Keep original sidebar styles, add modal styles */
+.nav-badge {
+    margin-left: auto;
+    background: var(--primary);
+    color: white;
+    font-size: 0.55rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 20px;
+}
+.nav-subitem {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.7rem;
+    border-radius: 0.4rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.75rem;
+    transition: all 0.2s;
+}
+.nav-subitem:hover {
+    background: rgba(139,92,246,0.1);
+    color: var(--primary);
+}
+.nav-group-content {
+    padding-left: 1.5rem;
+    display: none;
+}
+.nav-group-header {
+    cursor: pointer;
+}
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+}
+.modal-content {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 1.5rem;
+    width: 90%;
+    max-width: 400px;
+    border: 1px solid var(--border-color);
+}
+</style>
+
+<script>
+function toggleGroup(groupId) {
+    const content = document.getElementById('group-' + groupId);
+    const arrow = document.getElementById('arrow-' + groupId);
+    if (content.style.display === 'none' || content.style.display === '') {
+        content.style.display = 'block';
+        if (arrow) arrow.classList.add('open');
+    } else {
+        content.style.display = 'none';
+        if (arrow) arrow.classList.remove('open');
+    }
+}
+// Initialize all groups closed
+['auto-checkers', 'checkers', 'hitters', 'key-based', 'tools', 'preferences', 'custom-apis'].forEach(g => {
+    const el = document.getElementById('group-' + g);
+    if (el) el.style.display = 'none';
+});
+
+function showAddCustomGateModal() {
+    document.getElementById('addCustomGateModal').style.display = 'flex';
+}
+function closeAddCustomGateModal() {
+    document.getElementById('addCustomGateModal').style.display = 'none';
+}
+
+document.getElementById('addCustomGateForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const name = document.getElementById('customGateName').value.trim();
+    const endpoint = document.getElementById('customGateEndpoint').value.trim();
+    const cost = parseInt(document.getElementById('customGateCost').value);
+    if (!name || !endpoint) {
+        Swal.fire('Error', 'Please fill all fields', 'error');
+        return;
+    }
+    try {
+        const response = await fetch('/api/add_custom_gate.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, endpoint, cost })
+        });
+        const data = await response.json();
+        if (data.success) {
+            Swal.fire('Success', 'Custom API added! Refresh page to see it.', 'success').then(() => {
+                location.reload();
+            });
+        } else {
+            Swal.fire('Error', data.error || 'Failed to add', 'error');
+        }
+    } catch(e) {
+        Swal.fire('Error', 'Network error', 'error');
+    }
+    closeAddCustomGateModal();
+});
+</script>

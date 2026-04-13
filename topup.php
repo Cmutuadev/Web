@@ -21,9 +21,12 @@ $settings = loadSettings();
 $walletAddress = $settings['binance_wallet'] ?? '';
 $network = $settings['binance_network'] ?? 'BEP20';
 $rate = $settings['credits_per_usdt'] ?? 100;
-$adminTelegram = $settings['admin_telegram_username'] ?? 'admin';
+$adminTelegram = $settings['admin_telegram_username'] ?? 'sunilxd';
 
-// Plan definitions with ratings and features
+// Check if Telegram is configured
+$telegramConfigured = !empty($settings['telegram_bot_token']) && !empty($settings['telegram_group_id']);
+
+// Plan definitions with features
 $plans = [
     ['name' => 'Basic', 'price' => 5, 'credits' => 500, 'color' => '#6b7280', 'icon' => 'fa-star', 'badge' => 'Starter', 'rating' => 4.0, 'features' => ['100 Checks/Day', 'Basic Support', '5 Gates Access']],
     ['name' => 'Premium', 'price' => 15, 'credits' => 1800, 'color' => '#f59e0b', 'icon' => 'fa-gem', 'badge' => 'Popular', 'rating' => 4.5, 'features' => ['500 Checks/Day', 'Priority Support', '10 Gates Access', 'Mass Check']],
@@ -48,11 +51,10 @@ foreach ($userTopups as $request) {
 
 // Handle redeem key
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $pdo = getDB();
+    $pdo = getMongoDB();
     
     // Handle redeem key
     if (isset($_POST['action']) && $_POST['action'] === 'redeem_key') {
-    $pdo = getDB();
         $key = trim($_POST['redeem_key'] ?? '');
         
         if (empty($key)) {
@@ -96,7 +98,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // Handle top-up submission
     if (isset($_POST['action']) && $_POST['action'] === 'submit_topup') {
-        // Check for pending requests first
         if ($hasPendingRequest) {
             $error = "⚠️ You have a pending top-up request. Please wait for admin approval before submitting a new one.";
         } else {
@@ -133,6 +134,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 saveTopups($topups);
                 $success = "✅ Top-up request submitted! Admin will review shortly.";
                 $hasPendingRequest = true;
+                
+                // Refresh user topups
+                $userTopups = array_filter($topups, function($t) use ($username) {
+                    return ($t['user'] ?? '') === $username;
+                });
             }
         }
     }
@@ -140,21 +146,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Handle admin message
     if (isset($_POST['action']) && $_POST['action'] === 'send_message') {
         $message = trim($_POST['message'] ?? '');
-        if (!empty($message) && !empty($settings['telegram_bot_token']) && !empty($settings['admin_telegram_id'])) {
+        if (!empty($message) && !empty($settings['telegram_bot_token']) && !empty($settings['telegram_group_id'])) {
             $fullMessage = "📨 <b>NEW MESSAGE FROM USER</b>\n\n";
             $fullMessage .= "👤 <b>User:</b> {$username}\n";
             $fullMessage .= "💬 <b>Message:</b>\n{$message}\n\n";
             $fullMessage .= "🕐 <b>Time:</b> " . date('Y-m-d H:i:s') . " UTC";
             
-            sendTelegramMessage($settings['admin_telegram_id'], $fullMessage);
+            sendTelegramMessage($settings['telegram_group_id'], $fullMessage);
             $success = "✅ Message sent to admin! They will respond shortly.";
         } else {
-            $error = "❌ Could not send message. Telegram not configured.";
+            $error = "❌ Telegram is not configured. Please contact admin directly: @{$adminTelegram}";
         }
     }
 }
 
 // Refresh data
+$topups = loadTopups();
 $userTopups = array_filter($topups, function($t) use ($username) {
     return ($t['user'] ?? '') === $username;
 });
@@ -243,12 +250,14 @@ foreach ($userTopups as $request) {
             width: 32px;
             height: 32px;
             border-radius: 50%;
-            background: linear-gradient(135deg, var(--primary), #06b6d4);
+            background: #000000;
+            border: 2px solid var(--primary);
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 600;
             font-size: 0.875rem;
+            color: white;
         }
         .theme-btn {
             background: none;
@@ -320,11 +329,11 @@ foreach ($userTopups as $request) {
             font-size: 0.875rem;
             margin-bottom: 1.5rem;
         }
-        /* 4 Column Grid for Plans */
+        /* Plans Grid - Smaller Text */
         .plans-grid-4 {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1rem;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 0.8rem;
             margin-bottom: 1.5rem;
         }
         @media (max-width: 1024px) {
@@ -339,127 +348,89 @@ foreach ($userTopups as $request) {
         }
         .plan-card {
             background: var(--card);
-            border: 2px solid var(--border);
-            border-radius: 1rem;
-            padding: 1.25rem;
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 0.8rem;
             text-align: center;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
             position: relative;
-            overflow: hidden;
-        }
-        .plan-card::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(139,92,246,0.1), transparent);
-            opacity: 0;
-            transition: opacity 0.3s;
-            pointer-events: none;
-        }
-        .plan-card:hover::before {
-            opacity: 1;
         }
         .plan-card:hover {
-            transform: translateY(-6px);
+            transform: translateY(-3px);
             border-color: var(--primary);
-            box-shadow: 0 10px 30px rgba(139,92,246,0.2);
         }
         .plan-card.selected {
             border-color: var(--primary);
-            background: linear-gradient(135deg, rgba(139,92,246,0.15), rgba(6,182,212,0.05));
-            box-shadow: 0 0 20px rgba(139,92,246,0.3);
+            background: rgba(139,92,246,0.1);
         }
         .plan-badge {
             position: absolute;
             top: -8px;
-            right: 12px;
+            right: 8px;
             background: linear-gradient(135deg, var(--primary), #7c3aed);
             color: white;
-            font-size: 0.65rem;
-            padding: 0.2rem 0.7rem;
+            font-size: 0.55rem;
+            padding: 0.15rem 0.5rem;
             border-radius: 20px;
             font-weight: 600;
-            z-index: 1;
         }
         .plan-icon {
-            font-size: 2rem;
-            margin-bottom: 0.75rem;
-            animation: float 3s ease-in-out infinite;
-        }
-        @keyframes float {
-            0%, 100% { transform: translateY(0px); }
-            50% { transform: translateY(-5px); }
+            font-size: 1.3rem;
+            margin-bottom: 0.4rem;
         }
         .plan-name {
-            font-size: 1.1rem;
+            font-size: 0.8rem;
             font-weight: 700;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.2rem;
         }
         .plan-price {
-            font-size: 1.5rem;
+            font-size: 1rem;
             font-weight: 800;
             color: var(--primary);
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.2rem;
         }
         .plan-price small {
-            font-size: 0.7rem;
+            font-size: 0.55rem;
             font-weight: normal;
             color: var(--text-muted);
         }
         .plan-credits {
-            font-size: 0.75rem;
+            font-size: 0.6rem;
             color: var(--text-muted);
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.4rem;
         }
-        /* Star Rating Styles */
         .rating {
             display: flex;
             justify-content: center;
-            gap: 0.15rem;
-            margin-bottom: 0.75rem;
+            gap: 0.1rem;
+            margin-bottom: 0.4rem;
         }
         .star {
-            font-size: 0.8rem;
+            font-size: 0.6rem;
             color: #ffc107;
-            text-shadow: 0 0 2px rgba(0,0,0,0.5);
-            animation: twinkle 1.5s ease-in-out infinite;
-        }
-        @keyframes twinkle {
-            0%, 100% { opacity: 0.6; transform: scale(1); }
-            50% { opacity: 1; transform: scale(1.1); }
-        }
-        .star.filled {
-            color: #ffc107;
-        }
-        .star.half {
-            color: #ffc107;
-            position: relative;
         }
         .rating-value {
-            font-size: 0.7rem;
+            font-size: 0.55rem;
             color: var(--text-muted);
-            margin-left: 0.25rem;
+            margin-left: 0.2rem;
         }
         .features-list {
             text-align: left;
-            margin-top: 0.75rem;
-            padding-top: 0.75rem;
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
             border-top: 1px solid var(--border);
         }
         .feature-item {
-            font-size: 0.65rem;
+            font-size: 0.55rem;
             color: var(--text-muted);
-            padding: 0.2rem 0;
+            padding: 0.15rem 0;
             display: flex;
             align-items: center;
-            gap: 0.3rem;
+            gap: 0.25rem;
         }
         .feature-item i {
-            font-size: 0.6rem;
+            font-size: 0.5rem;
             color: var(--success);
         }
         .grid-2 {
@@ -476,37 +447,32 @@ foreach ($userTopups as $request) {
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 0.75rem;
-            padding: 1.25rem;
+            padding: 1rem;
         }
         .card-title {
             font-weight: 600;
-            margin-bottom: 1rem;
+            margin-bottom: 0.8rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            font-size: 1.1rem;
+            font-size: 0.9rem;
         }
         .card-title i {
             color: var(--primary);
         }
         .info-row {
-            margin-bottom: 1rem;
-            padding-bottom: 0.75rem;
+            margin-bottom: 0.8rem;
+            padding-bottom: 0.6rem;
             border-bottom: 1px solid var(--border);
         }
-        .info-row:last-child {
-            border-bottom: none;
-            margin-bottom: 0;
-            padding-bottom: 0;
-        }
         .info-label {
-            font-size: 0.7rem;
+            font-size: 0.65rem;
             text-transform: uppercase;
             color: var(--text-muted);
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.2rem;
         }
         .info-value {
-            font-size: 0.9rem;
+            font-size: 0.8rem;
             font-weight: 500;
             word-break: break-all;
         }
@@ -517,9 +483,9 @@ foreach ($userTopups as $request) {
         }
         .wallet-address code {
             flex: 1;
-            font-size: 0.75rem;
+            font-size: 0.65rem;
             background: var(--bg);
-            padding: 0.5rem;
+            padding: 0.4rem;
             border-radius: 0.5rem;
             word-break: break-all;
         }
@@ -527,7 +493,7 @@ foreach ($userTopups as $request) {
             background: none;
             border: 1px solid var(--border);
             border-radius: 0.5rem;
-            padding: 0.5rem;
+            padding: 0.4rem;
             cursor: pointer;
             color: var(--text-muted);
         }
@@ -536,23 +502,23 @@ foreach ($userTopups as $request) {
             border-color: var(--primary);
         }
         .form-group {
-            margin-bottom: 1rem;
+            margin-bottom: 0.8rem;
         }
         .form-group label {
             display: block;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             font-weight: 500;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.4rem;
             color: var(--text-muted);
         }
         .form-control {
             width: 100%;
-            padding: 0.75rem;
+            padding: 0.6rem;
             background: var(--bg);
             border: 1px solid var(--border);
             border-radius: 0.5rem;
             color: var(--text);
-            font-size: 0.875rem;
+            font-size: 0.8rem;
         }
         .form-control:focus {
             outline: none;
@@ -560,16 +526,17 @@ foreach ($userTopups as $request) {
         }
         textarea.form-control {
             resize: vertical;
-            min-height: 80px;
+            min-height: 70px;
         }
         .btn {
             width: 100%;
-            padding: 0.75rem;
+            padding: 0.6rem;
             background: linear-gradient(135deg, var(--primary), #7c3aed);
             border: none;
             border-radius: 0.5rem;
             color: white;
             font-weight: 600;
+            font-size: 0.8rem;
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -597,18 +564,28 @@ foreach ($userTopups as $request) {
             background: var(--bg);
             border: 1px solid var(--border);
             border-radius: 0.5rem;
-            padding: 0.75rem;
-            margin-bottom: 0.75rem;
+            padding: 0.6rem;
+            margin-bottom: 0.6rem;
+            transition: all 0.3s;
+        }
+        .request-item.approved {
+            border-left: 3px solid var(--success);
+        }
+        .request-item.rejected {
+            border-left: 3px solid var(--danger);
+        }
+        .request-item.pending {
+            border-left: 3px solid var(--warning);
         }
         .request-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.4rem;
         }
         .status-badge {
-            font-size: 0.7rem;
-            padding: 0.2rem 0.5rem;
+            font-size: 0.6rem;
+            padding: 0.15rem 0.4rem;
             border-radius: 20px;
             font-weight: 500;
         }
@@ -625,63 +602,67 @@ foreach ($userTopups as $request) {
             color: var(--danger);
         }
         .request-date {
-            font-size: 0.65rem;
+            font-size: 0.55rem;
             color: var(--text-muted);
         }
         .request-details {
-            font-size: 0.8rem;
-            margin-bottom: 0.25rem;
+            font-size: 0.7rem;
+            margin-bottom: 0.2rem;
         }
         .tx-hash {
-            font-size: 0.65rem;
+            font-size: 0.55rem;
             color: var(--text-muted);
             font-family: monospace;
         }
         .empty-state {
             text-align: center;
-            padding: 2rem;
+            padding: 1.5rem;
             color: var(--text-muted);
         }
         .empty-state i {
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
+            font-size: 1.5rem;
+            margin-bottom: 0.4rem;
             opacity: 0.5;
         }
         .success-message {
             background: rgba(16,185,129,0.1);
             border: 1px solid rgba(16,185,129,0.3);
             color: var(--success);
-            padding: 0.75rem;
+            padding: 0.6rem;
             border-radius: 0.5rem;
             margin-bottom: 1rem;
+            font-size: 0.8rem;
         }
         .error-message {
             background: rgba(239,68,68,0.1);
             border: 1px solid rgba(239,68,68,0.3);
             color: var(--danger);
-            padding: 0.75rem;
+            padding: 0.6rem;
             border-radius: 0.5rem;
             margin-bottom: 1rem;
+            font-size: 0.8rem;
         }
         .request-history {
-            max-height: 300px;
+            max-height: 400px;
             overflow-y: auto;
         }
         .text-primary {
             color: var(--primary);
         }
         .text-sm {
-            font-size: 0.75rem;
+            font-size: 0.65rem;
+        }
+        .text-muted {
+            color: var(--text-muted);
         }
         .mt-1 { margin-top: 0.25rem; }
         .mt-2 { margin-top: 0.5rem; }
-        .mt-3 { margin-top: 0.75rem; }
         .mb-1 { margin-bottom: 0.25rem; }
         .mb-2 { margin-bottom: 0.5rem; }
         .redeem-section {
             margin-bottom: 1rem;
             padding-bottom: 1rem;
-            border-bottom: 2px solid var(--border);
+            border-bottom: 1px solid var(--border);
         }
         .flex {
             display: flex;
@@ -691,45 +672,34 @@ foreach ($userTopups as $request) {
             flex: 1;
         }
         .chat-messages {
-            max-height: 200px;
+            max-height: 180px;
             overflow-y: auto;
             background: var(--bg);
             border-radius: 0.5rem;
-            padding: 0.75rem;
-            margin-bottom: 0.75rem;
+            padding: 0.6rem;
+            margin-bottom: 0.6rem;
         }
         .message-bubble {
-            margin-bottom: 0.75rem;
-            padding: 0.5rem;
+            margin-bottom: 0.6rem;
+            padding: 0.4rem;
             border-radius: 0.5rem;
             background: var(--card);
             border-left: 3px solid var(--primary);
         }
         .message-user {
-            font-size: 0.7rem;
+            font-size: 0.65rem;
             font-weight: 600;
             color: var(--primary);
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.2rem;
         }
         .message-text {
-            font-size: 0.8rem;
+            font-size: 0.7rem;
             word-break: break-word;
         }
         .message-time {
-            font-size: 0.6rem;
+            font-size: 0.55rem;
             color: var(--text-muted);
-            margin-top: 0.25rem;
-        }
-        .floating-stars {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            pointer-events: none;
-            opacity: 0.6;
-        }
-        .floating-stars i {
-            font-size: 0.5rem;
-            margin: 0 -2px;
+            margin-top: 0.2rem;
         }
     </style>
 </head>
@@ -753,8 +723,8 @@ foreach ($userTopups as $request) {
                     <?php echo strtoupper(substr($user['display_name'] ?? $username, 0, 1)); ?>
                 </div>
                 <div>
-                    <div style="font-size: 0.875rem; font-weight: 500;"><?php echo htmlspecialchars($user['display_name'] ?? $username); ?></div>
-                    <div style="font-size: 0.7rem; color: var(--text-muted);"><?php echo number_format($credits); ?> credits</div>
+                    <div style="font-size: 0.8rem; font-weight: 500;"><?php echo htmlspecialchars($user['display_name'] ?? $username); ?></div>
+                    <div style="font-size: 0.65rem; color: var(--text-muted);"><?php echo number_format($credits); ?> credits</div>
                 </div>
             </div>
         </div>
@@ -802,7 +772,7 @@ foreach ($userTopups as $request) {
                 <!-- Left Column -->
                 <div>
                     <!-- Premium Key Redemption -->
-                    <div class="card" style="margin-bottom: 1.5rem;">
+                    <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-title">
                             <i class="fas fa-key"></i>
                             Redeem Premium Key
@@ -811,20 +781,20 @@ foreach ($userTopups as $request) {
                             <form method="POST" class="flex">
                                 <input type="hidden" name="action" value="redeem_key">
                                 <div class="flex-grow">
-                                    <input type="text" name="redeem_key" class="form-control" placeholder="Enter your premium key (XXXX-XXXX-XXXX-XXXX)" required>
+                                    <input type="text" name="redeem_key" class="form-control" placeholder="Enter your premium key" required>
                                 </div>
-                                <button type="submit" class="btn" style="width: auto; padding: 0.75rem 1.5rem;">
+                                <button type="submit" class="btn" style="width: auto; padding: 0.6rem 1.2rem;">
                                     <i class="fas fa-gift"></i> Redeem
                                 </button>
                             </form>
-                            <div class="text-sm text-muted mt-2">
-                                <i class="fas fa-info-circle"></i> Premium keys give you bonus credits and may upgrade your plan
+                            <div class="text-sm text-muted mt-1">
+                                <i class="fas fa-info-circle"></i> Premium keys give you bonus credits
                             </div>
                         </div>
                     </div>
 
-                    <!-- Plans Section - 4 Column Grid with Floating Stars -->
-                    <div class="card" style="margin-bottom: 1.5rem;">
+                    <!-- Plans Section - 5 Column Grid -->
+                    <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-title">
                             <i class="fas fa-crown"></i>
                             Choose Your Plan
@@ -832,11 +802,6 @@ foreach ($userTopups as $request) {
                         <div class="plans-grid-4">
                             <?php foreach ($plans as $index => $plan): ?>
                             <div class="plan-card" data-plan-index="<?php echo $index; ?>" onclick="selectPlan(<?php echo $index; ?>)">
-                                <div class="floating-stars">
-                                    <?php for($i = 0; $i < 3; $i++): ?>
-                                    <i class="fas fa-star" style="color: #ffc107; font-size: 0.4rem;"></i>
-                                    <?php endfor; ?>
-                                </div>
                                 <?php if ($plan['badge']): ?>
                                 <div class="plan-badge"><?php echo $plan['badge']; ?></div>
                                 <?php endif; ?>
@@ -847,34 +812,30 @@ foreach ($userTopups as $request) {
                                 <div class="plan-price">$<?php echo $plan['price']; ?><small> USDT</small></div>
                                 <div class="plan-credits">+<?php echo number_format($plan['credits']); ?> credits</div>
                                 
-                                <!-- Star Rating -->
                                 <div class="rating">
                                     <?php
                                     $fullStars = floor($plan['rating']);
-                                    $halfStar = ($plan['rating'] - $fullStars) >= 0.5;
                                     for($i = 1; $i <= 5; $i++):
                                         if($i <= $fullStars):
                                     ?>
-                                    <i class="fas fa-star star filled"></i>
-                                    <?php elseif($halfStar && $i == $fullStars + 1): ?>
-                                    <i class="fas fa-star-half-alt star half"></i>
+                                    <i class="fas fa-star star"></i>
                                     <?php else: ?>
                                     <i class="far fa-star star"></i>
                                     <?php endif; endfor; ?>
-                                    <span class="rating-value">(<?php echo $plan['rating']; ?>)</span>
+                                    <span class="rating-value"><?php echo $plan['rating']; ?></span>
                                 </div>
                                 
                                 <div class="features-list">
-                                    <?php foreach(array_slice($plan['features'], 0, 3) as $feature): ?>
+                                    <?php foreach(array_slice($plan['features'], 0, 2) as $feature): ?>
                                     <div class="feature-item">
                                         <i class="fas fa-check-circle"></i>
                                         <span><?php echo htmlspecialchars($feature); ?></span>
                                     </div>
                                     <?php endforeach; ?>
-                                    <?php if(count($plan['features']) > 3): ?>
+                                    <?php if(count($plan['features']) > 2): ?>
                                     <div class="feature-item">
                                         <i class="fas fa-plus-circle"></i>
-                                        <span>+<?php echo count($plan['features']) - 3; ?> more features</span>
+                                        <span>+<?php echo count($plan['features']) - 2; ?> more</span>
                                     </div>
                                     <?php endif; ?>
                                 </div>
@@ -918,7 +879,7 @@ foreach ($userTopups as $request) {
 
                             <div class="form-group">
                                 <label>Selected Plan</label>
-                                <div id="selectedPlanDisplay" class="info-value" style="padding: 0.5rem; background: var(--bg); border-radius: 0.5rem;">
+                                <div id="selectedPlanDisplay" class="info-value" style="padding: 0.4rem; background: var(--bg); border-radius: 0.5rem; font-size:0.75rem;">
                                     Click on a plan above to select
                                 </div>
                             </div>
@@ -927,17 +888,17 @@ foreach ($userTopups as $request) {
                                 <label>Transaction Hash (TxID)</label>
                                 <input type="text" name="tx_hash" placeholder="0x..." class="form-control" required>
                                 <div class="text-sm text-muted mt-1">
-                                    <i class="fas fa-info-circle"></i> Send exactly the amount shown above and paste the transaction hash
+                                    <i class="fas fa-info-circle"></i> Send exact amount and paste transaction hash
                                 </div>
                             </div>
 
-                            <button type="submit" class="btn" id="submitBtn" disabled>
+                            <button type="submit" class="btn" id="submitBtn" <?php echo $hasPendingRequest ? 'disabled' : ''; ?>>
                                 Submit Top-Up Request
                             </button>
                         </form>
                         <?php if ($hasPendingRequest): ?>
                         <div class="text-sm text-muted mt-2" style="text-align: center;">
-                            <i class="fas fa-clock"></i> You have a pending request. Wait for approval before submitting a new one.
+                            <i class="fas fa-clock"></i> You have a pending request. Please wait for admin approval.
                         </div>
                         <?php endif; ?>
                         <?php endif; ?>
@@ -947,7 +908,7 @@ foreach ($userTopups as $request) {
                 <!-- Right Column -->
                 <div>
                     <!-- Chat with Admin Card -->
-                    <div class="card" style="margin-bottom: 1.5rem;">
+                    <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-title">
                             <i class="fab fa-telegram"></i>
                             Contact Admin
@@ -955,14 +916,14 @@ foreach ($userTopups as $request) {
                         <div class="chat-messages" id="chatMessages">
                             <div class="message-bubble">
                                 <div class="message-user">🤖 System</div>
-                                <div class="message-text">Hello! Need help? Send a message to admin. They will respond via Telegram.</div>
+                                <div class="message-text">Hello! Need help? Send a message to admin.</div>
                                 <div class="message-time">Just now</div>
                             </div>
                         </div>
                         <form method="POST" id="messageForm">
                             <input type="hidden" name="action" value="send_message">
                             <div class="form-group">
-                                <textarea name="message" class="form-control" placeholder="Type your message here..." rows="3" required></textarea>
+                                <textarea name="message" class="form-control" placeholder="Type your message here..." rows="2" required></textarea>
                             </div>
                             <div class="flex" style="gap: 0.5rem;">
                                 <button type="submit" class="btn btn-telegram" style="flex: 1;">
@@ -973,8 +934,8 @@ foreach ($userTopups as $request) {
                                 </button>
                             </div>
                         </form>
-                        <div class="text-sm text-muted mt-2">
-                            <i class="fas fa-info-circle"></i> Messages are sent directly to admin's Telegram. Please include your username if you need support.
+                        <div class="text-sm text-muted mt-1">
+                            <i class="fas fa-info-circle"></i> Messages go directly to admin
                         </div>
                     </div>
 
@@ -983,9 +944,12 @@ foreach ($userTopups as $request) {
                         <div class="card-title">
                             <i class="fas fa-history"></i>
                             Your Requests
+                            <button onclick="refreshTopupStatus()" class="btn btn-sm" style="width: auto; padding: 0.2rem 0.5rem; margin-left: auto; font-size: 0.6rem;">
+                                <i class="fas fa-sync-alt"></i> Refresh
+                            </button>
                         </div>
 
-                        <div class="request-history">
+                        <div class="request-history" id="requestHistory">
                             <?php if (empty($userTopups)): ?>
                             <div class="empty-state">
                                 <i class="fas fa-inbox"></i>
@@ -993,7 +957,7 @@ foreach ($userTopups as $request) {
                             </div>
                             <?php else: ?>
                                 <?php foreach (array_reverse($userTopups) as $request): ?>
-                                <div class="request-item">
+                                <div class="request-item <?php echo $request['status'] ?? 'pending'; ?>">
                                     <div class="request-header">
                                         <span class="status-badge <?php echo $request['status'] ?? 'pending'; ?>">
                                             <?php echo ucfirst($request['status'] ?? 'Pending'); ?>
@@ -1002,13 +966,23 @@ foreach ($userTopups as $request) {
                                     </div>
                                     <div class="request-details">
                                         <?php if (isset($request['plan']) && $request['plan']): ?>
-                                            <strong><?php echo htmlspecialchars($request['plan']); ?></strong> Plan - 
+                                            <strong><?php echo htmlspecialchars($request['plan']); ?></strong> - 
                                         <?php endif; ?>
                                         $<?php echo $request['amount']; ?> USDT → <?php echo number_format($request['credits']); ?> credits
                                     </div>
                                     <div class="tx-hash">
                                         TX: <?php echo substr($request['tx_hash'], 0, 20); ?>...
                                     </div>
+                                    <?php if (($request['status'] ?? '') === 'approved' && isset($request['reviewed_at'])): ?>
+                                    <div class="text-sm text-muted mt-1">
+                                        <i class="fas fa-check-circle"></i> Approved on <?php echo date('M d, H:i', strtotime($request['reviewed_at'])); ?>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if (($request['status'] ?? '') === 'rejected' && isset($request['reviewed_at'])): ?>
+                                    <div class="text-sm text-muted mt-1">
+                                        <i class="fas fa-times-circle"></i> Rejected on <?php echo date('M d, H:i', strtotime($request['reviewed_at'])); ?>
+                                    </div>
+                                    <?php endif; ?>
                                 </div>
                                 <?php endforeach; ?>
                             <?php endif; ?>
@@ -1028,41 +1002,34 @@ foreach ($userTopups as $request) {
             selectedPlanIndex = index;
             const plan = plans[index];
             
-            // Update UI
             document.querySelectorAll('.plan-card').forEach(card => card.classList.remove('selected'));
             document.querySelector(`.plan-card[data-plan-index="${index}"]`).classList.add('selected');
             
-            // Update display
             document.getElementById('selectedPlanDisplay').innerHTML = `
                 <strong>${plan.name}</strong> - $${plan.price} USDT for ${plan.credits.toLocaleString()} credits
-                <div style="font-size:0.7rem; margin-top:0.25rem;">
-                    <i class="fas fa-star" style="color: #ffc107;"></i> ${plan.rating} rating
-                </div>
             `;
             document.getElementById('selectedPlan').value = index;
             
-            // Enable submit button if no pending request
             if (!hasPending) {
                 document.getElementById('submitBtn').disabled = false;
             }
         }
         
-        // Disable submit if pending
         if (hasPending) {
             document.getElementById('submitBtn').disabled = true;
         }
         
-        // Sidebar toggle
         const menuBtn = document.getElementById('menuBtn');
         const sidebar = document.getElementById('sidebar');
         const main = document.getElementById('main');
         
-        menuBtn.addEventListener('click', () => {
-            sidebar.classList.toggle('open');
-            main.classList.toggle('sidebar-open');
-        });
+        if (menuBtn) {
+            menuBtn.addEventListener('click', () => {
+                sidebar.classList.toggle('open');
+                main.classList.toggle('sidebar-open');
+            });
+        }
         
-        // Close sidebar on link click (mobile)
         document.querySelectorAll('.nav-item').forEach(item => {
             item.addEventListener('click', () => {
                 if (window.innerWidth <= 768) {
@@ -1072,21 +1039,20 @@ foreach ($userTopups as $request) {
             });
         });
         
-        // Theme toggle
         const themeBtn = document.getElementById('themeBtn');
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.body.setAttribute('data-theme', savedTheme);
-        themeBtn.innerHTML = savedTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+        if (themeBtn) {
+            themeBtn.innerHTML = savedTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+            themeBtn.addEventListener('click', () => {
+                const current = document.body.getAttribute('data-theme');
+                const newTheme = current === 'dark' ? 'light' : 'dark';
+                document.body.setAttribute('data-theme', newTheme);
+                localStorage.setItem('theme', newTheme);
+                themeBtn.innerHTML = newTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+            });
+        }
         
-        themeBtn.addEventListener('click', () => {
-            const current = document.body.getAttribute('data-theme');
-            const newTheme = current === 'dark' ? 'light' : 'dark';
-            document.body.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-            themeBtn.innerHTML = newTheme === 'dark' ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
-        });
-        
-        // Copy wallet address
         function copyWallet() {
             const wallet = '<?php echo addslashes($walletAddress); ?>';
             navigator.clipboard.writeText(wallet);
@@ -1099,15 +1065,29 @@ foreach ($userTopups as $request) {
             });
         }
         
-        // Handle logout
-        <?php if (isset($_GET['logout'])): ?>
-        Swal.fire({
-            title: 'Logged Out',
-            text: 'You have been successfully logged out.',
-            icon: 'success',
-            timer: 2000,
-            showConfirmButton: false
-        }).then(() => { window.location.href = 'login.php'; });
+        function refreshTopupStatus() {
+            fetch(window.location.href)
+                .then(response => response.text())
+                .then(html => {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const newHistory = doc.querySelector('.request-history');
+                    const currentHistory = document.querySelector('.request-history');
+                    if (newHistory && currentHistory) {
+                        currentHistory.innerHTML = newHistory.innerHTML;
+                    }
+                    // Check if pending status changed
+                    const hasPendingNow = doc.body.innerHTML.includes('You have a pending request');
+                    if (!hasPendingNow && hasPending) {
+                        location.reload();
+                    }
+                })
+                .catch(console.error);
+        }
+        
+        // Auto-refresh every 30 seconds if there are pending requests
+        <?php if ($hasPendingRequest): ?>
+        setInterval(refreshTopupStatus, 30000);
         <?php endif; ?>
     </script>
 </body>

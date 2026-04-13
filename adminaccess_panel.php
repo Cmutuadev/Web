@@ -1,25 +1,12 @@
 <?php
 require_once 'includes/config.php';
 
-// Check authentication
-if (!isLoggedIn()) {
+if (!isLoggedIn() || !isAdmin()) {
     header('Location: login.php');
     exit;
 }
 
-if (!isAdmin()) {
-    header('Location: index.php');
-    exit;
-}
-
-// Handle logout
-if (isset($_GET['logout'])) {
-    session_destroy();
-    header('Location: login.php');
-    exit;
-}
-
-$tab = $_GET['tab'] ?? 'users';
+$tab = $_GET['tab'] ?? 'dashboard';
 $settings = loadSettings();
 $gates = loadGates();
 $users = loadUsers();
@@ -27,881 +14,690 @@ $topups = loadTopups();
 $adverts = loadAdverts();
 $apiKeys = loadApiKeys();
 $creditHistory = loadCreditHistory();
+$db = getMongoDB();
 
-// Load ingroup data properly
-$ingroupConfig = loadIngroupConfig();
-$ingroupGates = loadIngroupGates();
-$ingroupGroups = loadIngroupGroups();
+// Load categories
+$categories = [];
+if ($db) {
+    $cursor = $db->gate_categories->find([], ['sort' => ['sort_order' => 1]]);
+    foreach ($cursor as $doc) {
+        $categories[$doc['name']] = [
+            'label' => $doc['label'],
+            'icon' => $doc['icon'],
+            'sort_order' => $doc['sort_order'],
+            'is_active' => $doc['is_active']
+        ];
+    }
+}
 
-// Plan definitions
-$plans = [
-    'basic' => ['name' => 'Basic', 'credits' => 100, 'daily_limit' => 50, 'color' => '#6b7280', 'gates' => ['auth', 'charge', 'vbv']],
-    'premium' => ['name' => 'Premium', 'credits' => 500, 'daily_limit' => 200, 'color' => '#f59e0b', 'gates' => ['auth', 'charge', 'auth-charge', 'stripe-auth', 'shopify', 'razorpay', 'vbv']],
-    'gold' => ['name' => 'Gold', 'credits' => 1500, 'daily_limit' => 500, 'color' => '#fbbf24', 'gates' => ['auth', 'charge', 'auth-charge', 'stripe-auth', 'shopify', 'razorpay', 'stripe-checkout', 'stripe-invoice', 'stripe-inbuilt', 'vbv']],
-    'platinum' => ['name' => 'Platinum', 'credits' => 5000, 'daily_limit' => 1500, 'color' => '#a855f7', 'gates' => ['all']],
-    'lifetime' => ['name' => 'Lifetime', 'credits' => 999999, 'daily_limit' => 999999, 'color' => '#ec4899', 'gates' => ['all']]
+// Load sidebar pages
+$sidebarPages = [];
+if ($db) {
+    $cursor = $db->sidebar_pages->find([], ['sort' => ['order' => 1]]);
+    foreach ($cursor as $doc) {
+        $sidebarPages[] = [
+            'page_id' => $doc['page_id'],
+            'title' => $doc['title'],
+            'icon' => $doc['icon'],
+            'url' => $doc['url'],
+            'category' => $doc['category'],
+            'order' => $doc['order'],
+            'visible_to' => $doc['visible_to'],
+            'enabled' => $doc['enabled']
+        ];
+    }
+}
+
+// Insert default sidebar pages if none exist
+if (empty($sidebarPages)) {
+    $defaultPages = [
+        ['page_id' => 'basic_gates', 'title' => 'Basic Gates', 'icon' => 'fa-star', 'url' => '#', 'category' => 'BASIC', 'order' => 10, 'visible_to' => 'all', 'enabled' => 1],
+        ['page_id' => 'premium_gates', 'title' => 'Premium Gates', 'icon' => 'fa-gem', 'url' => '#', 'category' => 'PREMIUM', 'order' => 20, 'visible_to' => 'premium', 'enabled' => 1],
+        ['page_id' => 'gold_gates', 'title' => 'Gold Gates', 'icon' => 'fa-crown', 'url' => '#', 'category' => 'GOLD', 'order' => 30, 'visible_to' => 'premium', 'enabled' => 1],
+        ['page_id' => 'platinum_gates', 'title' => 'Platinum Gates', 'icon' => 'fa-diamond', 'url' => '#', 'category' => 'PLATINUM', 'order' => 40, 'visible_to' => 'premium', 'enabled' => 1],
+        ['page_id' => 'lifetime_gates', 'title' => 'Lifetime Gates', 'icon' => 'fa-infinity', 'url' => '#', 'category' => 'LIFETIME', 'order' => 50, 'visible_to' => 'premium', 'enabled' => 1],
+    ];
+    foreach ($defaultPages as $page) {
+        $db->sidebar_pages->insertOne($page + ['created_at' => new MongoDB\BSON\UTCDateTime()]);
+        $sidebarPages[] = $page;
+    }
+}
+
+$gateTypes = [
+    'auto_checker' => 'Auto Checker',
+    'checker' => 'Checker', 
+    'hitter' => 'Hitter',
+    'key_based' => 'Key Based',
+    'tool' => 'Tool'
 ];
 
-// Handle actions
+$plans = ['basic' => 'Basic', 'premium' => 'Premium', 'gold' => 'Gold', 'platinum' => 'Platinum', 'lifetime' => 'Lifetime'];
+
+// Handle POST actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
-    // Update user plan
-    if ($action === 'update_plan') {
-        $username = $_POST['username'] ?? '';
-        $newPlan = $_POST['plan'] ?? 'basic';
-        if (isset($users[$username]) && isset($plans[$newPlan])) {
-            $users[$username]['plan'] = $newPlan;
-            $users[$username]['credits'] = $plans[$newPlan]['credits'];
-            saveUsers($users);
-            $success = "Updated {$username} to {$plans[$newPlan]['name']} plan with {$plans[$newPlan]['credits']} credits";
+    // Toggle gate enable/disable
+    if ($action === 'toggle_gate') {
+        $gateKey = $_POST['gate_key'];
+        $currentGate = $db->gates->findOne(['key' => $gateKey]);
+        $newStatus = $currentGate['enabled'] == 1 ? 0 : 1;
+        $db->gates->updateOne(['key' => $gateKey], ['$set' => ['enabled' => $newStatus]]);
+        $success = "Gate " . ($newStatus ? "enabled" : "disabled");
+        $gates = loadGates(true);
+    }
+    
+    // Delete gate
+    if ($action === 'delete_gate') {
+        $db->gates->deleteOne(['key' => $_POST['gate_key']]);
+        $success = "Gateway deleted";
+        $gates = loadGates(true);
+    }
+    
+    // Add gate
+    if ($action === 'add_gate') {
+        $key = preg_replace('/[^a-z0-9_]/i', '', strtolower($_POST['gate_key']));
+        $existing = $db->gates->findOne(['key' => $key]);
+        if (!$existing) {
+            $db->gates->insertOne([
+                'key' => $key,
+                'label' => $_POST['gate_label'],
+                'api_endpoint' => $_POST['gate_api'],
+                'credit_cost' => intval($_POST['credit_cost']),
+                'required_plan' => $_POST['required_plan'],
+                'type' => $_POST['gate_type'],
+                'category' => $_POST['gate_category'],
+                'enabled' => isset($_POST['enabled']) ? 1 : 0,
+                'description' => $_POST['description'] ?? '',
+                'visible_plans' => ['basic', 'premium', 'gold', 'platinum', 'lifetime'],
+                'created_at' => new MongoDB\BSON\UTCDateTime()
+            ]);
+            $success = "Gateway added";
+            $gates = loadGates(true);
+        } else {
+            $error = "Gate key already exists";
         }
     }
     
-    // Update user credits
+    // Edit gate
+    if ($action === 'edit_gate') {
+        $db->gates->updateOne(['key' => $_POST['gate_key']], ['$set' => [
+            'label' => $_POST['gate_label'],
+            'api_endpoint' => $_POST['gate_api'],
+            'credit_cost' => intval($_POST['credit_cost']),
+            'required_plan' => $_POST['required_plan'],
+            'type' => $_POST['gate_type'],
+            'category' => $_POST['gate_category'],
+            'enabled' => isset($_POST['enabled']) ? 1 : 0,
+            'description' => $_POST['description'] ?? ''
+        ]]);
+        $success = "Gateway updated";
+        $gates = loadGates(true);
+    }
+    
+    // Add category
+    if ($action === 'add_category') {
+        $name = preg_replace('/[^a-z0-9_]/i', '', strtolower($_POST['category_name']));
+        $db->gate_categories->updateOne(
+            ['name' => $name],
+            ['$set' => [
+                'label' => $_POST['category_label'],
+                'icon' => $_POST['category_icon'],
+                'sort_order' => intval($_POST['sort_order']),
+                'is_active' => isset($_POST['is_active']) ? 1 : 0
+            ]],
+            ['upsert' => true]
+        );
+        $success = "Category added";
+        $categories = [];
+        $cursor = $db->gate_categories->find([], ['sort' => ['sort_order' => 1]]);
+        foreach ($cursor as $doc) {
+            $categories[$doc['name']] = ['label' => $doc['label'], 'icon' => $doc['icon'], 'sort_order' => $doc['sort_order'], 'is_active' => $doc['is_active']];
+        }
+    }
+    
+    // Delete category
+    if ($action === 'delete_category') {
+        $db->gate_categories->deleteOne(['name' => $_POST['category_name']]);
+        $success = "Category deleted";
+    }
+    
+    // Add sidebar page
+    if ($action === 'add_sidebar_page') {
+        $pageId = preg_replace('/[^a-z0-9_-]/i', '', strtolower($_POST['page_id']));
+        $db->sidebar_pages->insertOne([
+            'page_id' => $pageId,
+            'title' => $_POST['page_title'],
+            'icon' => $_POST['page_icon'],
+            'url' => $_POST['page_url'],
+            'category' => $_POST['page_category'],
+            'order' => intval($_POST['page_order']),
+            'visible_to' => $_POST['visible_to'],
+            'enabled' => isset($_POST['enabled']) ? 1 : 0,
+            'created_at' => new MongoDB\BSON\UTCDateTime()
+        ]);
+        $success = "Sidebar page added";
+        $sidebarPages = loadSidebarPages(true);
+    }
+    
+    // Edit sidebar page
+    if ($action === 'edit_sidebar_page') {
+        $db->sidebar_pages->updateOne(
+            ['page_id' => $_POST['page_id']],
+            ['$set' => [
+                'title' => $_POST['page_title'],
+                'icon' => $_POST['page_icon'],
+                'url' => $_POST['page_url'],
+                'category' => $_POST['page_category'],
+                'order' => intval($_POST['page_order']),
+                'visible_to' => $_POST['visible_to'],
+                'enabled' => isset($_POST['enabled']) ? 1 : 0
+            ]]
+        );
+        $success = "Sidebar page updated";
+        $sidebarPages = loadSidebarPages(true);
+    }
+    
+    // Delete sidebar page
+    if ($action === 'delete_sidebar_page') {
+        $db->sidebar_pages->deleteOne(['page_id' => $_POST['page_id']]);
+        $success = "Sidebar page deleted";
+        $sidebarPages = loadSidebarPages(true);
+    }
+    
+    // User management
     if ($action === 'update_credits') {
-        $username = $_POST['username'] ?? '';
-        $credits = floatval($_POST['credits'] ?? 0);
-        if (isset($users[$username])) {
-            $users[$username]['credits'] = $credits;
-            saveUsers($users);
-            $success = "Updated credits for {$username} to {$credits}";
-        }
+        $db->users->updateOne(['username' => $_POST['username']], ['$set' => ['credits' => floatval($_POST['credits'])]]);
+        $success = "Credits updated";
     }
     
-    // Ban/Unban user
+    if ($action === 'update_plan') {
+        $plan = $_POST['plan'];
+        $credits = ['basic'=>100,'premium'=>500,'gold'=>1500,'platinum'=>5000,'lifetime'=>999999][$plan];
+        $db->users->updateOne(['username' => $_POST['username']], ['$set' => ['plan' => $plan, 'credits' => $credits]]);
+        $success = "Plan updated";
+    }
+    
     if ($action === 'toggle_ban') {
-        $username = $_POST['username'] ?? '';
-        if (isset($users[$username])) {
-            $users[$username]['banned'] = !($users[$username]['banned'] ?? false);
-            saveUsers($users);
-            $success = $users[$username]['banned'] ? "Banned {$username}" : "Unbanned {$username}";
-        }
+        $user = $db->users->findOne(['username' => $_POST['username']]);
+        $db->users->updateOne(['username' => $_POST['username']], ['$set' => ['banned' => $user['banned'] ? 0 : 1]]);
+        $success = $user['banned'] ? "User unbanned" : "User banned";
     }
     
-    // Toggle admin role
     if ($action === 'toggle_admin') {
-        $username = $_POST['username'] ?? '';
-        if (isset($users[$username])) {
-            $users[$username]['is_admin'] = !($users[$username]['is_admin'] ?? false);
-            saveUsers($users);
-            $success = $users[$username]['is_admin'] ? "Made {$username} admin" : "Removed admin from {$username}";
+        $user = $db->users->findOne(['username' => $_POST['username']]);
+        $db->users->updateOne(['username' => $_POST['username']], ['$set' => ['is_admin' => $user['is_admin'] ? 0 : 1]]);
+        $success = $user['is_admin'] ? "Admin removed" : "Admin added";
+    }
+    
+    if ($action === 'delete_user') {
+        if ($_POST['username'] !== 'admin') {
+            $db->users->deleteOne(['username' => $_POST['username']]);
+            $success = "User deleted";
         }
     }
     
-    // Approve top-up
+    // Top-ups
     if ($action === 'approve_topup') {
-        $topupId = $_POST['topup_id'] ?? '';
         foreach ($topups as $key => $topup) {
-            if ($topup['id'] == $topupId && $topup['status'] === 'pending') {
+            if ($topup['id'] == $_POST['topup_id'] && $topup['status'] === 'pending') {
                 $topups[$key]['status'] = 'approved';
-                $topups[$key]['reviewed_at'] = date('Y-m-d H:i:s');
-                $topups[$key]['reviewed_by'] = $_SESSION['user']['name'] ?? 'Admin';
                 addCredits($topup['user'], $topup['credits'], 'Top-up approved');
                 saveTopups($topups);
-                $success = "Top-up approved for {$topup['user']}";
+                $success = "Top-up approved";
                 break;
             }
         }
     }
     
-    // Reject top-up
     if ($action === 'reject_topup') {
-        $topupId = $_POST['topup_id'] ?? '';
         foreach ($topups as $key => $topup) {
-            if ($topup['id'] == $topupId && $topup['status'] === 'pending') {
+            if ($topup['id'] == $_POST['topup_id'] && $topup['status'] === 'pending') {
                 $topups[$key]['status'] = 'rejected';
-                $topups[$key]['reviewed_at'] = date('Y-m-d H:i:s');
-                $topups[$key]['reviewed_by'] = $_SESSION['user']['name'] ?? 'Admin';
                 saveTopups($topups);
-                $success = "Top-up rejected for {$topup['user']}";
+                $success = "Top-up rejected";
                 break;
             }
         }
     }
     
-    // Save gateway settings with plan restrictions
-    if ($action === 'save_gates') {
-        foreach ($gates as $key => $gate) {
-            $gates[$key]['enabled'] = isset($_POST['gate'][$key]);
-            $gates[$key]['required_plan'] = $_POST['required_plan'][$key] ?? 'basic';
-        }
-        saveGates($gates);
-        $success = "Gateway settings saved";
-    }
-    
-    // Save system settings
+    // Settings
     if ($action === 'save_settings') {
-        $settings['binance_wallet'] = $_POST['binance_wallet'] ?? '';
-        $settings['binance_network'] = $_POST['binance_network'] ?? 'BEP20';
-        $settings['credits_per_usdt'] = floatval($_POST['credits_per_usdt'] ?? 100);
-        $settings['default_credits'] = floatval($_POST['default_credits'] ?? 100);
-        $settings['daily_rate_limit'] = intval($_POST['daily_rate_limit'] ?? 500);
-        $settings['daily_credit_reset'] = floatval($_POST['daily_credit_reset'] ?? 100);
-        $settings['site_announcement'] = $_POST['site_announcement'] ?? '';
-        $settings['telegram_bot_token'] = $_POST['telegram_bot_token'] ?? '';
-        $settings['telegram_group_id'] = $_POST['telegram_group_id'] ?? '';
+        foreach ($_POST as $key => $value) {
+            if (!in_array($key, ['action'])) {
+                $settings[$key] = $value;
+            }
+        }
         $settings['telegram_hits_enabled'] = isset($_POST['telegram_hits_enabled']) ? 'true' : 'false';
-        $settings['telegram_bot_username'] = $_POST['telegram_bot_username'] ?? '';
         $settings['maintenance_mode'] = isset($_POST['maintenance_mode']) ? 'true' : 'false';
         saveSettings($settings);
-        $success = "System settings saved";
+        $success = "Settings saved";
     }
     
-    // Generate API key
+    // API Keys
     if ($action === 'generate_api_key') {
         $newKey = generateApiKey();
         $apiKeys[] = $newKey;
         saveApiKeys($apiKeys);
-        $generatedKey = $newKey;
-        $success = "New API key generated";
+        $success = "API Key generated: " . $newKey;
     }
     
-    // Delete API key
     if ($action === 'delete_api_key') {
-        $keyToDelete = $_POST['api_key'] ?? '';
-        $apiKeys = array_filter($apiKeys, function($k) use ($keyToDelete) {
-            return $k !== $keyToDelete;
-        });
+        $apiKeys = array_filter($apiKeys, fn($k) => $k !== $_POST['api_key']);
         saveApiKeys(array_values($apiKeys));
-        $success = "API key deleted";
+        $success = "API Key deleted";
     }
     
-    // Create advert with instant broadcast
-    if ($action === 'create_advert') {
-        $advert = [
-            'id' => uniqid(),
-            'title' => $_POST['title'] ?? '',
-            'content' => $_POST['content'] ?? '',
-            'image_url' => $_POST['image_url'] ?? '',
-            'link_url' => $_POST['link_url'] ?? '',
-            'position' => $_POST['position'] ?? 'home',
-            'is_active' => isset($_POST['is_active']),
-            'created_at' => date('Y-m-d H:i:s')
-        ];
-        $adverts[] = $advert;
-        saveAdverts($adverts);
-        
-        // INSTANT BROADCAST to all users via Telegram if enabled
-        if (!empty($settings['telegram_bot_token']) && !empty($settings['telegram_group_id'])) {
-            $message = "📢 <b>NEW ANNOUNCEMENT</b>\n\n";
-            $message .= "🔔 <b>" . htmlspecialchars($advert['title']) . "</b>\n\n";
-            $message .= htmlspecialchars($advert['content']) . "\n\n";
-            if (!empty($advert['link_url'])) {
-                $message .= "🔗 <a href=\"" . htmlspecialchars($advert['link_url']) . "\">Click here</a>\n\n";
-            }
-            $message .= "🔥 <b>APPROVED CHECKER</b>";
-            
-            // Send to all users with Telegram IDs
-            $sentCount = 0;
-            foreach ($users as $username => $user) {
-                if (!empty($user['telegram_id'])) {
-                    sendTelegramMessage($user['telegram_id'], $message);
-                    $sentCount++;
-                }
-            }
-            $success = "Advert created and broadcast to {$sentCount} Telegram users!";
-        } else {
-            $success = "Advert created! (Telegram not configured for broadcast)";
-        }
-    }
-    
-    // Toggle advert
-    if ($action === 'toggle_advert') {
-        $advertId = $_POST['advert_id'] ?? '';
-        foreach ($adverts as $key => $ad) {
-            if ($ad['id'] == $advertId) {
-                $adverts[$key]['is_active'] = !$ad['is_active'];
-                saveAdverts($adverts);
-                $success = "Advert toggled";
-                break;
-            }
-        }
-    }
-    
-    // Delete advert
-    if ($action === 'delete_advert') {
-        $advertId = $_POST['advert_id'] ?? '';
-        $adverts = array_filter($adverts, function($ad) use ($advertId) {
-            return $ad['id'] != $advertId;
-        });
-        saveAdverts(array_values($adverts));
-        $success = "Advert deleted";
-    }
-    
-    // FIXED: Toggle maintenance for page with array check
-    if ($action === 'toggle_page_maintenance') {
-        $pagePath = $_POST['page_path'] ?? '';
-        $key = 'maint_' . $pagePath;
-        
-        // Ensure maintenance_pages is an array
-        if (!isset($settings['maintenance_pages']) || !is_array($settings['maintenance_pages'])) {
-            $settings['maintenance_pages'] = [];
-        }
-        
-        $settings['maintenance_pages'][$key] = isset($_POST['enabled']) ? 'true' : 'false';
-        saveSettings($settings);
-        $success = "Page maintenance toggled";
-    }
-    
-    // Ingroup bot settings
-    if ($action === 'save_ingroup') {
-        $ingroupConfig = [
-            'bot_token' => $_POST['ingroup_bot_token'] ?? '',
-            'is_active' => isset($_POST['ingroup_active']),
-            'rate_limit_per_user' => intval($_POST['rate_limit'] ?? 10),
-            'mass_max_cards' => intval($_POST['mass_max_cards'] ?? 25),
-            'premium_only_mass' => isset($_POST['premium_only_mass']),
-            'buy_message' => $_POST['buy_message'] ?? '',
-            'admin_telegram_ids' => $_POST['admin_telegram_ids'] ?? ''
-        ];
-        saveIngroupConfig($ingroupConfig);
-        $success = "Ingroup bot settings saved";
-    }
-    
-    // Toggle ingroup gate
-    if ($action === 'toggle_ingroup_gate') {
-        $gateKey = $_POST['gate_key'] ?? '';
-        foreach ($ingroupGates as $key => $gate) {
-            if ($gate['gate_key'] == $gateKey) {
-                $ingroupGates[$key]['is_enabled'] = !$gate['is_enabled'];
-                saveIngroupGates($ingroupGates);
-                $success = "Gate toggled";
-                break;
-            }
-        }
-    }
-    
-    // Add ingroup group
-    if ($action === 'add_ingroup_group') {
-        $groupId = $_POST['group_id'] ?? '';
-        $groupName = $_POST['group_name'] ?? '';
-        $ingroupGroups[] = [
-            'id' => uniqid(),
-            'group_id' => $groupId,
-            'group_name' => $groupName,
-            'is_active' => true,
-            'created_at' => date('Y-m-d H:i:s')
-        ];
-        saveIngroupGroups($ingroupGroups);
-        $success = "Group added";
-    }
-    
-    // Delete ingroup group
-    if ($action === 'delete_ingroup_group') {
-        $groupId = $_POST['group_id'] ?? '';
-        $ingroupGroups = array_filter($ingroupGroups, function($g) use ($groupId) {
-            return $g['id'] != $groupId;
-        });
-        saveIngroupGroups(array_values($ingroupGroups));
-        $success = "Group deleted";
-    }
-    
-    // Toggle ingroup group
-    if ($action === 'toggle_ingroup_group') {
-        $groupId = $_POST['group_id'] ?? '';
-        foreach ($ingroupGroups as $key => $g) {
-            if ($g['id'] == $groupId) {
-                $ingroupGroups[$key]['is_active'] = !$g['is_active'];
-                saveIngroupGroups($ingroupGroups);
-                $success = "Group toggled";
-                break;
-            }
-        }
-    }
-    
-    // Send broadcast
+    // Broadcast
     if ($action === 'send_broadcast') {
-        $message = $_POST['broadcast_message'] ?? '';
-        if (!empty($message)) {
-            $sent = 0;
-            $failed = 0;
-            foreach ($users as $username => $user) {
-                if (!empty($user['telegram_id']) && !empty($settings['telegram_bot_token'])) {
-                    $result = sendTelegramMessage($user['telegram_id'], $message);
-                    if ($result) {
-                        $sent++;
-                    } else {
-                        $failed++;
-                    }
-                }
+        $sent = 0;
+        foreach ($users as $username => $user) {
+            if (!empty($user['telegram_id']) && !empty($settings['telegram_bot_token'])) {
+                sendTelegramMessage($user['telegram_id'], $_POST['broadcast_message']);
+                $sent++;
             }
-            $broadcastResult = ['sent' => $sent, 'failed' => $failed, 'total' => count($users)];
-            $success = "Broadcast sent to {$sent} users";
+        }
+        $success = "Broadcast sent to $sent users";
+    }
+    
+    // Webhook
+    if ($action === 'set_webhook') {
+        $webhookUrl = $_POST['webhook_url'] ?? '';
+        $botToken = $settings['telegram_bot_token'] ?? '';
+        if (!empty($botToken) && !empty($webhookUrl)) {
+            $apiUrl = "https://api.telegram.org/bot{$botToken}/setWebhook?url=" . urlencode($webhookUrl);
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            $response = curl_exec($ch);
+            curl_close($ch);
+            $result = json_decode($response, true);
+            if ($result && $result['ok']) {
+                $success = "Webhook set successfully!";
+                $settings['telegram_webhook_url'] = $webhookUrl;
+                saveSettings($settings);
+            } else {
+                $error = "Failed to set webhook";
+            }
+        }
+    }
+    
+    if ($action === 'delete_webhook') {
+        $botToken = $settings['telegram_bot_token'] ?? '';
+        if (!empty($botToken)) {
+            $apiUrl = "https://api.telegram.org/bot{$botToken}/deleteWebhook";
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            $response = curl_exec($ch);
+            curl_close($ch);
+            $result = json_decode($response, true);
+            if ($result && $result['ok']) {
+                $success = "Webhook deleted!";
+                unset($settings['telegram_webhook_url']);
+                saveSettings($settings);
+            }
+        }
+    }
+    
+    if ($action === 'get_webhook_info') {
+        $botToken = $settings['telegram_bot_token'] ?? '';
+        if (!empty($botToken)) {
+            $apiUrl = "https://api.telegram.org/bot{$botToken}/getWebhookInfo";
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            $response = curl_exec($ch);
+            curl_close($ch);
+            $result = json_decode($response, true);
+            if ($result && $result['ok']) {
+                $info = $result['result'];
+                $webhookStatus = $info['url'] ? "Active: " . $info['url'] : "Not set";
+                $success = "Webhook Info: " . $webhookStatus;
+            }
         }
     }
 }
 
-// Get stats for hit stealing dashboard
-$totalUsers = count($users);
-$activeUsers = count(array_filter((array)$users, fn($u) => empty($u['banned'])));
-$bannedUsers = $totalUsers - $activeUsers;
-$pendingTopups = count(array_filter((array)$topups, fn($t) => $t['status'] === 'pending'));
-$totalChecks = count($creditHistory);
-$approvedChecks = count(array_filter((array)$creditHistory, fn($h) => stripos($h['reason'], 'approved') !== false || stripos($h['reason'], 'charged') !== false));
-$activeGates = count(array_filter($gates, fn($g) => $g['enabled']));
-
-// FIXED: Safely get maintenance pages
-$maintenancePages = isset($settings['maintenance_pages']) && is_array($settings['maintenance_pages']) ? $settings['maintenance_pages'] : [];
-$maintCount = is_array($maintenancePages) ? count(array_filter($maintenancePages, fn($v) => $v === 'true')) : 0;
-
-// Get hit stealing data - last 24 hours hits by gate
-$last24h = strtotime('-24 hours');
-$gateHits = [];
-foreach ($creditHistory as $h) {
-    if (strtotime($h['created_at']) > $last24h && (stripos($h['reason'], 'approved') !== false || stripos($h['reason'], 'charged') !== false)) {
-        $gate = explode(' ', $h['reason'])[0] ?? 'unknown';
-        if (!isset($gateHits[$gate])) $gateHits[$gate] = 0;
-        $gateHits[$gate]++;
+function loadSidebarPages($force = false) {
+    static $pages = null;
+    if ($pages !== null && !$force) return $pages;
+    $db = getMongoDB();
+    if (!$db) return [];
+    $pages = [];
+    $cursor = $db->sidebar_pages->find([], ['sort' => ['order' => 1]]);
+    foreach ($cursor as $doc) {
+        $pages[] = [
+            'page_id' => $doc['page_id'],
+            'title' => $doc['title'],
+            'icon' => $doc['icon'],
+            'url' => $doc['url'],
+            'category' => $doc['category'],
+            'order' => $doc['order'],
+            'visible_to' => $doc['visible_to'],
+            'enabled' => $doc['enabled']
+        ];
     }
-}
-arsort($gateHits);
-$topGates = array_slice($gateHits, 0, 10, true);
-
-// Page paths for maintenance
-$ALL_PAGES = [
-    ['path' => '/checker/auto-shopify', 'label' => 'Shopify', 'category' => 'Auto Checkers'],
-    ['path' => '/checker/stripe-auth', 'label' => 'Stripe Auth', 'category' => 'Auto Checkers'],
-    ['path' => '/checker/razorpay', 'label' => 'Razorpay', 'category' => 'Auto Checkers'],
-    ['path' => '/checker/auth', 'label' => 'Auth', 'category' => 'Checkers'],
-    ['path' => '/checker/charge', 'label' => 'Charge', 'category' => 'Checkers'],
-    ['path' => '/checker/auth-charge', 'label' => 'Auth+Charge', 'category' => 'Checkers'],
-    ['path' => '/checker/stripe-checkout', 'label' => 'Stripe Checkout', 'category' => 'Hitters'],
-    ['path' => '/checker/stripe-invoice', 'label' => 'Stripe Invoice', 'category' => 'Hitters'],
-    ['path' => '/checker/stripe-inbuilt', 'label' => 'Stripe Inbuilt', 'category' => 'Hitters'],
-    ['path' => '/checker/key-stripe', 'label' => 'Stripe', 'category' => 'Key Based'],
-    ['path' => '/checker/key-paypal', 'label' => 'PayPal', 'category' => 'Key Based'],
-    ['path' => '/tools/address-gen', 'label' => 'Address Generator', 'category' => 'Tools'],
-    ['path' => '/tools/bin-lookup', 'label' => 'Bin Lookup', 'category' => 'Tools'],
-    ['path' => '/tools/cc-cleaner', 'label' => 'CC Cleaner', 'category' => 'Tools'],
-    ['path' => '/tools/cc-generator', 'label' => 'CC Generator', 'category' => 'Tools'],
-    ['path' => '/tools/proxy-checker', 'label' => 'Proxy Checker', 'category' => 'Tools'],
-    ['path' => '/tools/vbv-checker', 'label' => 'VBV Checker', 'category' => 'Tools'],
-];
-
-$pagesByCategory = [];
-foreach ($ALL_PAGES as $page) {
-    $pagesByCategory[$page['category']][] = $page;
+    return $pages;
 }
 
-$botUserCount = count(array_filter((array)$users, fn($u) => !empty($u['telegram_id'])));
+$totalUsers = count($users);
+$activeGates = count(array_filter($gates, fn($g) => $g['enabled']));
+$pendingTopups = count(array_filter($topups, fn($t) => $t['status'] === 'pending'));
+$botUserCount = count(array_filter($users, fn($u) => !empty($u['telegram_id'])));
+$sidebarPageCount = count($sidebarPages);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel | APPROVED CHECKER</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --primary-bg: #0a0e27;
-            --secondary-bg: #131937;
-            --card-bg: #1a1f3a;
-            --accent-blue: #3b82f6;
-            --accent-purple: #8b5cf6;
-            --accent-green: #10b981;
-            --text-primary: #ffffff;
-            --text-secondary: #94a3b8;
-            --border-color: #1e293b;
-            --error: #ef4444;
-            --warning: #f59e0b;
-            --success: #22c55e;
-            --font-size-base: 14px;
-        }
-        [data-theme="light"] {
-            --primary-bg: #f8fafc;
-            --secondary-bg: #ffffff;
-            --card-bg: #ffffff;
-            --text-primary: #0f172a;
-            --text-secondary: #475569;
-            --border-color: #e2e8f0;
-        }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: var(--primary-bg);
-            color: var(--text-primary);
-            min-height: 100vh;
-            font-size: var(--font-size-base);
-        }
-        /* Font size controls */
-        .font-size-control {
-            position: fixed;
-            bottom: 20px;
-            left: 20px;
-            z-index: 1000;
-            background: var(--card-bg);
-            border-radius: 30px;
-            padding: 8px 12px;
-            display: flex;
-            gap: 8px;
-            border: 1px solid var(--border-color);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-        }
-        .font-size-control button {
-            background: var(--secondary-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            padding: 4px 12px;
-            cursor: pointer;
-            font-weight: bold;
-            color: var(--text-primary);
-        }
-        .font-size-control button:hover {
-            background: var(--accent-blue);
-            color: white;
-        }
-        .font-size-control span {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-        .navbar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background: rgba(10,14,39,0.95);
-            backdrop-filter: blur(10px);
-            padding: 0.5rem 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 1000;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            height: 50px;
-        }
-        [data-theme="light"] .navbar { background: rgba(248,250,252,0.95); }
-        .navbar-brand {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 1rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #06b6d4, #3b82f6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .menu-toggle {
-            color: var(--text-primary);
-            font-size: 1rem;
-            cursor: pointer;
-            width: 32px;
-            height: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 8px;
-            background: rgba(255,255,255,0.1);
-        }
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.2rem 0.5rem;
-            background: rgba(255,255,255,0.1);
-            border-radius: 8px;
-        }
-        .user-avatar {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            object-fit: cover;
-            border: 2px solid #3b82f6;
-        }
-        .user-name {
-            font-weight: 600;
-            color: var(--text-primary);
-            font-size: 0.75rem;
-        }
-        .theme-toggle {
-            width: 36px;
-            height: 18px;
-            background: var(--secondary-bg);
-            border-radius: 10px;
-            cursor: pointer;
-            border: 1px solid var(--border-color);
-            position: relative;
-        }
-        .theme-toggle-slider {
-            position: absolute;
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            left: 2px;
-            top: 1px;
-            transition: transform 0.3s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.45rem;
-        }
-        [data-theme="light"] .theme-toggle-slider { transform: translateX(16px); }
-        .sidebar {
-            position: fixed;
-            left: 0;
-            top: 50px;
-            bottom: 0;
-            width: 240px;
-            background: var(--card-bg);
-            border-right: 1px solid var(--border-color);
-            padding: 0.75rem 0;
-            z-index: 999;
-            overflow-y: auto;
-            transform: translateX(-100%);
-            transition: transform 0.3s ease;
-        }
+        body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0f; color: #fff; }
+        .navbar { position: fixed; top: 0; left: 0; right: 0; background: #111114; border-bottom: 1px solid #1e1e24; padding: 0.5rem 1rem; display: flex; justify-content: space-between; align-items: center; z-index: 100; height: 50px; }
+        .sidebar { position: fixed; left: 0; top: 50px; bottom: 0; width: 240px; background: #111114; border-right: 1px solid #1e1e24; overflow-y: auto; transform: translateX(-100%); transition: 0.2s; z-index: 99; }
         .sidebar.open { transform: translateX(0); }
-        .sidebar-menu { list-style: none; }
-        .sidebar-item { margin: 0.2rem 0.4rem; }
-        .sidebar-link {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.4rem 0.6rem;
-            color: var(--text-secondary);
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.8rem;
-            transition: all 0.3s;
-        }
-        .sidebar-link:hover { background: rgba(59,130,246,0.1); color: #3b82f6; }
-        .sidebar-link.active {
-            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            color: white;
-        }
-        .sidebar-badge {
-            font-size: 0.6rem;
-            padding: 1px 5px;
-            border-radius: 10px;
-            margin-left: auto;
-        }
-        .badge-danger { background: #ef4444; color: white; }
-        .badge-warning { background: #f59e0b; color: white; }
-        .badge-success { background: #22c55e; color: white; }
-        .main-content {
-            margin-left: 0;
-            margin-top: 50px;
-            padding: 1rem;
-            transition: margin-left 0.3s ease;
-        }
+        .sidebar-link { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.8rem; color: #94a3b8; text-decoration: none; font-size: 0.75rem; cursor: pointer; }
+        .sidebar-link:hover { background: rgba(139,92,246,0.1); color: #8b5cf6; }
+        .sidebar-link.active { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: white; }
+        .main-content { margin-left: 0; margin-top: 50px; padding: 1rem; transition: 0.2s; }
         .main-content.sidebar-open { margin-left: 240px; }
-        @media (max-width: 768px) {
-            .main-content.sidebar-open { margin-left: 0; }
-            .sidebar { width: 70vw; }
-        }
-        .admin-container { max-width: 1400px; margin: 0 auto; }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-            gap: 0.8rem;
-            margin-bottom: 1rem;
-        }
-        .stat-card {
-            background: var(--card-bg);
-            border-radius: 12px;
-            padding: 0.75rem;
-            border: 1px solid var(--border-color);
-            transition: all 0.3s;
-        }
-        .stat-card:hover { transform: translateY(-2px); }
-        .stat-value { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.2rem; }
-        .stat-label { font-size: 0.6rem; color: var(--text-secondary); text-transform: uppercase; }
-        .hit-stealing-card {
-            background: linear-gradient(135deg, rgba(139,92,246,0.1), rgba(6,182,212,0.05));
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 0.75rem;
-            margin-bottom: 1rem;
-        }
-        .hit-stealing-card h4 {
-            font-size: 0.75rem;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .gate-hit-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.3rem 0;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 0.7rem;
-        }
-        .admin-tabs {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.3rem;
-            margin-bottom: 1rem;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.5rem;
-        }
-        .tab-btn {
-            padding: 0.4rem 0.8rem;
-            background: transparent;
-            border: none;
-            border-radius: 6px;
-            color: var(--text-secondary);
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            display: flex;
-            align-items: center;
-            gap: 0.4rem;
-            font-size: 0.7rem;
-        }
-        .tab-btn:hover { background: rgba(59,130,246,0.1); color: #3b82f6; }
-        .tab-btn.active {
-            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            color: white;
-        }
-        .tab-content { display: none; animation: fadeIn 0.3s ease; }
-        .tab-content.active { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .glass-card {
-            background: var(--card-bg);
-            border-radius: 12px;
-            padding: 1rem;
-            border: 1px solid var(--border-color);
-            margin-bottom: 1rem;
-        }
-        .form-group { margin-bottom: 0.75rem; }
-        .form-group label {
-            display: block;
-            margin-bottom: 0.3rem;
-            font-size: 0.7rem;
-            font-weight: 600;
-            color: var(--text-secondary);
-        }
-        .form-control {
-            width: 100%;
-            padding: 0.5rem;
-            background: var(--secondary-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            color: var(--text-primary);
-            font-size: 0.8rem;
-        }
-        .form-control:focus { outline: none; border-color: #3b82f6; }
-        .btn {
-            padding: 0.4rem 0.8rem;
-            border-radius: 6px;
-            border: none;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            font-size: 0.7rem;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-            color: white;
-        }
-        .btn-primary:hover { transform: translateY(-1px); opacity: 0.9; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.8rem; margin-bottom: 1rem; }
+        .stat-card { background: #111114; border: 1px solid #1e1e24; border-radius: 0.5rem; padding: 0.6rem; text-align: center; cursor: pointer; }
+        .stat-card:hover { border-color: #8b5cf6; }
+        .stat-value { font-size: 1.2rem; font-weight: 700; color: #8b5cf6; }
+        .stat-label { font-size: 0.55rem; color: #6b6b76; text-transform: uppercase; }
+        .card { background: #111114; border: 1px solid #1e1e24; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+        .card-title { font-size: 0.85rem; font-weight: 600; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; border-bottom: 1px solid #1e1e24; padding-bottom: 0.5rem; }
+        .form-group { margin-bottom: 0.8rem; }
+        label { display: block; font-size: 0.65rem; font-weight: 600; color: #6b6b76; margin-bottom: 0.3rem; text-transform: uppercase; }
+        input, select, textarea { width: 100%; padding: 0.5rem; background: #0a0a0f; border: 1px solid #1e1e24; border-radius: 0.3rem; color: #fff; font-size: 0.75rem; }
+        input:focus, select:focus { outline: none; border-color: #8b5cf6; }
+        .btn { padding: 0.4rem 0.8rem; border-radius: 0.3rem; font-size: 0.7rem; font-weight: 600; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 0.3rem; }
+        .btn-primary { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: white; }
         .btn-danger { background: #ef4444; color: white; }
-        .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.65rem; }
+        .btn-success { background: #10b981; color: white; }
+        .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.65rem; }
         table { width: 100%; border-collapse: collapse; font-size: 0.7rem; }
-        th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border-color); }
-        th { font-weight: 600; color: var(--text-secondary); }
-        .badge {
-            display: inline-block;
-            padding: 0.15rem 0.4rem;
-            border-radius: 12px;
-            font-size: 0.6rem;
-            font-weight: 600;
-        }
-        .badge-basic { background: rgba(107,114,128,0.2); color: #9ca3af; }
-        .badge-premium { background: rgba(245,158,11,0.2); color: #f59e0b; }
-        .badge-gold { background: rgba(251,191,36,0.2); color: #fbbf24; }
-        .badge-platinum { background: rgba(168,85,247,0.2); color: #a855f7; }
-        .badge-lifetime { background: rgba(236,72,153,0.2); color: #ec4899; }
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 40px;
-            height: 20px;
-        }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: 0.3s;
-            border-radius: 20px;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 16px;
-            width: 16px;
-            left: 2px;
-            bottom: 2px;
-            background-color: white;
-            transition: 0.3s;
-            border-radius: 50%;
-        }
-        input:checked + .slider { background: linear-gradient(135deg, #3b82f6, #8b5cf6); }
-        input:checked + .slider:before { transform: translateX(20px); }
+        th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #1e1e24; }
+        th { color: #6b6b76; font-weight: 600; }
+        .badge { display: inline-block; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-size: 0.6rem; font-weight: 600; }
+        .badge-enabled { background: #10b981; color: white; }
+        .badge-disabled { background: #ef4444; color: white; }
+        .badge-warning { background: #f59e0b; color: black; }
         .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
-        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
-        .empty-state { text-align: center; padding: 1.5rem; color: var(--text-secondary); }
-        .empty-state i { font-size: 2rem; margin-bottom: 0.5rem; opacity: 0.5; }
-        .success-message {
-            background: rgba(34,197,94,0.1);
-            border: 1px solid rgba(34,197,94,0.3);
-            color: #22c55e;
-            padding: 0.5rem;
-            border-radius: 6px;
-            margin-bottom: 0.75rem;
-            font-size: 0.7rem;
-        }
-        select.form-control { cursor: pointer; }
-        textarea.form-control { resize: vertical; min-height: 60px; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+        @media (max-width: 768px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } .main-content.sidebar-open { margin-left: 0; } .sidebar { width: 280px; } }
+        .success-message, .error-message { padding: 0.5rem 1rem; border-radius: 0.3rem; margin-bottom: 1rem; font-size: 0.75rem; }
+        .success-message { background: rgba(16,185,129,0.1); border: 1px solid #10b981; color: #10b981; }
+        .error-message { background: rgba(239,68,68,0.1); border: 1px solid #ef4444; color: #ef4444; }
+        .menu-toggle { color: white; font-size: 1.2rem; cursor: pointer; }
+        .tab-btn { padding: 0.4rem 1rem; background: none; border: none; color: #6b6b76; cursor: pointer; font-size: 0.75rem; border-radius: 0.3rem; }
+        .tab-btn.active { background: #8b5cf6; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .copy-btn { background: none; border: none; color: #6b6b76; cursor: pointer; margin-left: 0.3rem; }
+        .copy-btn:hover { color: #8b5cf6; }
+        .icon-preview { display: inline-block; width: 24px; text-align: center; }
     </style>
 </head>
-<body data-theme="dark">
-    <!-- Font Size Control -->
-    <div class="font-size-control">
-        <button id="fontMinus">A-</button>
-        <span id="fontSizeDisplay">14px</span>
-        <button id="fontPlus">A+</button>
-    </div>
-
+<body>
     <nav class="navbar">
-        <div class="menu-toggle" id="menuToggle">
-            <i class="fas fa-bars"></i>
-        </div>
-        <div class="navbar-brand">
-            <i class="fas fa-crown"></i>
-            <span>Admin Panel</span>
-        </div>
-        <div class="navbar-actions">
-            <div class="theme-toggle" onclick="toggleTheme()">
-                <div class="theme-toggle-slider"><i class="fas fa-moon"></i></div>
-            </div>
-            <div class="user-info">
-                <img src="https://ui-avatars.com/api/?name=<?php echo urlencode($_SESSION['user']['name'] ?? 'Admin'); ?>&background=8b5cf6&color=fff&size=64" class="user-avatar">
-                <span class="user-name"><?php echo htmlspecialchars($_SESSION['user']['name'] ?? 'Admin'); ?></span>
-            </div>
-        </div>
+        <div class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></div>
+        <div><strong><i class="fas fa-crown"></i> Admin Panel</strong></div>
+        <div><a href="index.php" style="color:white; text-decoration:none; font-size:0.7rem;"><i class="fas fa-home"></i> Dashboard</a></div>
     </nav>
-
+    
     <aside class="sidebar" id="sidebar">
-        <ul class="sidebar-menu">
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'users' ? 'active' : ''; ?>" onclick="switchTab('users')"><i class="fas fa-users"></i> Users <span class="sidebar-badge badge-danger"><?php echo $totalUsers; ?></span></a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'topups' ? 'active' : ''; ?>" onclick="switchTab('topups')"><i class="fas fa-wallet"></i> Top-Ups <?php if ($pendingTopups > 0): ?><span class="sidebar-badge badge-warning"><?php echo $pendingTopups; ?></span><?php endif; ?></a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'gates' ? 'active' : ''; ?>" onclick="switchTab('gates')"><i class="fas fa-plug"></i> Gates <span class="sidebar-badge badge-success"><?php echo $activeGates; ?>/<?php echo count($gates); ?></span></a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'pages' ? 'active' : ''; ?>" onclick="switchTab('pages')"><i class="fas fa-file-alt"></i> Pages <?php if ($maintCount > 0): ?><span class="sidebar-badge badge-warning"><?php echo $maintCount; ?></span><?php endif; ?></a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'adverts' ? 'active' : ''; ?>" onclick="switchTab('adverts')"><i class="fas fa-ad"></i> Adverts</a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'telegram' ? 'active' : ''; ?>" onclick="switchTab('telegram')"><i class="fab fa-telegram"></i> Telegram</a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'ingroup' ? 'active' : ''; ?>" onclick="switchTab('ingroup')"><i class="fas fa-robot"></i> Ingroup Bot</a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'broadcast' ? 'active' : ''; ?>" onclick="switchTab('broadcast')"><i class="fas fa-broadcast-tower"></i> Broadcast</a></li>
-            <li class="sidebar-item"><a class="sidebar-link <?php echo $tab === 'settings' ? 'active' : ''; ?>" onclick="switchTab('settings')"><i class="fas fa-cog"></i> Settings</a></li>
-            <li class="sidebar-item"><a href="adminaccess_panel.php?logout=1" class="sidebar-link logout"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
-            <li class="sidebar-item"><a href="index.php" class="sidebar-link"><i class="fas fa-arrow-left"></i> Back to Dashboard</a></li>
-        </ul>
+        <a class="sidebar-link <?php echo $tab === 'dashboard' ? 'active' : ''; ?>" onclick="switchTab('dashboard')"><i class="fas fa-chart-line"></i> Dashboard</a>
+        <a class="sidebar-link <?php echo $tab === 'gates' ? 'active' : ''; ?>" onclick="switchTab('gates')"><i class="fas fa-plug"></i> Gates</a>
+        <a class="sidebar-link <?php echo $tab === 'categories' ? 'active' : ''; ?>" onclick="switchTab('categories')"><i class="fas fa-folder"></i> Categories</a>
+        <a class="sidebar-link <?php echo $tab === 'sidebar_pages' ? 'active' : ''; ?>" onclick="switchTab('sidebar_pages')"><i class="fas fa-bars"></i> Sidebar Pages</a>
+        <a class="sidebar-link <?php echo $tab === 'users' ? 'active' : ''; ?>" onclick="switchTab('users')"><i class="fas fa-users"></i> Users</a>
+        <a class="sidebar-link <?php echo $tab === 'topups' ? 'active' : ''; ?>" onclick="switchTab('topups')"><i class="fas fa-wallet"></i> Top-Ups</a>
+        <a class="sidebar-link <?php echo $tab === 'telegram' ? 'active' : ''; ?>" onclick="switchTab('telegram')"><i class="fab fa-telegram"></i> Telegram</a>
+        <a class="sidebar-link <?php echo $tab === 'broadcast' ? 'active' : ''; ?>" onclick="switchTab('broadcast')"><i class="fas fa-broadcast-tower"></i> Broadcast</a>
+        <a class="sidebar-link <?php echo $tab === 'settings' ? 'active' : ''; ?>" onclick="switchTab('settings')"><i class="fas fa-cog"></i> Settings</a>
+        <a class="sidebar-link" href="?logout=1"><i class="fas fa-sign-out-alt"></i> Logout</a>
     </aside>
-
+    
     <main class="main-content" id="mainContent">
-        <div class="admin-container">
+        <div class="container">
             <?php if (isset($success)): ?>
-            <div class="success-message">✅ <?php echo htmlspecialchars($success); ?></div>
+            <div class="success-message"><i class="fas fa-check-circle"></i> <?php echo htmlspecialchars($success); ?></div>
+            <?php endif; ?>
+            <?php if (isset($error)): ?>
+            <div class="error-message"><i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error); ?></div>
             <?php endif; ?>
             
-            <!-- Hit Stealing Dashboard -->
-            <div class="hit-stealing-card">
-                <h4><i class="fas fa-chart-line" style="color: var(--success);"></i> Hit Stealing Dashboard (Last 24 Hours)</h4>
-                <div class="grid-2">
-                    <div>
-                        <div style="font-size:0.7rem; margin-bottom:0.5rem;"><strong>Top Performing Gates</strong></div>
-                        <?php if (empty($topGates)): ?>
-                        <div class="empty-state"><i class="fas fa-chart-simple"></i><span>No hits in last 24 hours</span></div>
-                        <?php else: ?>
-                        <?php foreach ($topGates as $gate => $hits): ?>
-                        <div class="gate-hit-item">
-                            <span><?php echo htmlspecialchars($gate); ?></span>
-                            <span class="badge badge-success"><?php echo $hits; ?> hits</span>
-                        </div>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                    <div>
-                        <div style="font-size:0.7rem; margin-bottom:0.5rem;"><strong>Total Statistics</strong></div>
-                        <div class="gate-hit-item"><span>Total Checks Today</span><span class="badge badge-success"><?php echo $totalChecks; ?></span></div>
-                        <div class="gate-hit-item"><span>Approved Hits Today</span><span class="badge badge-success"><?php echo $approvedChecks; ?></span></div>
-                        <div class="gate-hit-item"><span>Success Rate</span><span class="badge badge-success"><?php echo $totalChecks > 0 ? round(($approvedChecks / $totalChecks) * 100) : 0; ?>%</span></div>
-                        <div class="gate-hit-item"><span>Active Users</span><span class="badge badge-success"><?php echo $activeUsers; ?></span></div>
+            <!-- DASHBOARD TAB -->
+            <div id="dashboardTab" class="tab-content <?php echo $tab === 'dashboard' ? 'active' : ''; ?>">
+                <div class="stats-grid">
+                    <div class="stat-card" onclick="switchTab('users')"><div class="stat-value"><?php echo $totalUsers; ?></div><div class="stat-label">Total Users</div></div>
+                    <div class="stat-card" onclick="switchTab('gates')"><div class="stat-value"><?php echo $activeGates; ?></div><div class="stat-label">Active Gates</div></div>
+                    <div class="stat-card" onclick="switchTab('topups')"><div class="stat-value"><?php echo $pendingTopups; ?></div><div class="stat-label">Pending Top-ups</div></div>
+                    <div class="stat-card" onclick="switchTab('broadcast')"><div class="stat-value"><?php echo $botUserCount; ?></div><div class="stat-label">Telegram Users</div></div>
+                </div>
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-info-circle"></i> System Information</div>
+                    <div class="grid-2">
+                        <div><strong>PHP Version:</strong> <?php echo phpversion(); ?></div>
+                        <div><strong>MongoDB:</strong> <?php echo class_exists('MongoDB\Client') ? '✅ Connected' : '❌ Not connected'; ?></div>
+                        <div><strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></div>
+                        <div><strong>Timezone:</strong> <?php echo date_default_timezone_get(); ?></div>
                     </div>
                 </div>
             </div>
             
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-value"><?php echo $totalUsers; ?></div><div class="stat-label">Total Users</div></div>
-                <div class="stat-card"><div class="stat-value"><?php echo $activeUsers; ?></div><div class="stat-label">Active Users</div></div>
-                <div class="stat-card"><div class="stat-value"><?php echo $bannedUsers; ?></div><div class="stat-label">Banned Users</div></div>
-                <div class="stat-card"><div class="stat-value"><?php echo $pendingTopups; ?></div><div class="stat-label">Pending Top-ups</div></div>
-                <div class="stat-card"><div class="stat-value"><?php echo $totalChecks; ?></div><div class="stat-label">Total Checks</div></div>
-                <div class="stat-card"><div class="stat-value"><?php echo $approvedChecks; ?></div><div class="stat-label">Approved Hits</div></div>
+            <!-- GATES TAB -->
+            <div id="gatesTab" class="tab-content <?php echo $tab === 'gates' ? 'active' : ''; ?>">
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-plus-circle"></i> Add New Gateway</div>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="add_gate">
+                        <div class="grid-3">
+                            <div class="form-group"><label>Gate Key</label><input type="text" name="gate_key" required placeholder="my_gate"></div>
+                            <div class="form-group"><label>Display Name</label><input type="text" name="gate_label" required placeholder="My Gateway"></div>
+                            <div class="form-group"><label>API Endpoint</label><input type="text" name="gate_api" required placeholder="https://api.com?cc={cc}"></div>
+                            <div class="form-group"><label>Credit Cost</label><input type="number" name="credit_cost" value="1"></div>
+                            <div class="form-group"><label>Required Plan</label><select name="required_plan"><?php foreach($plans as $k=>$v): ?><option value="<?php echo $k; ?>"><?php echo $v; ?></option><?php endforeach; ?></select></div>
+                            <div class="form-group"><label>Type</label><select name="gate_type"><?php foreach($gateTypes as $k=>$v): ?><option value="<?php echo $k; ?>"><?php echo $v; ?></option><?php endforeach; ?></select></div>
+                            <div class="form-group"><label>Category</label><select name="gate_category"><?php foreach($categories as $name=>$cat): ?><option value="<?php echo $name; ?>"><?php echo $cat['label']; ?></option><?php endforeach; ?></select></div>
+                            <div class="form-group"><label>Description</label><textarea name="description" rows="2"></textarea></div>
+                            <div class="form-group"><label><input type="checkbox" name="enabled" checked> Enabled</label></div>
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Add Gateway</button>
+                    </form>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-list"></i> Existing Gateways</div>
+                    <div style="overflow-x:auto;">
+                        <table class="table">
+                            <thead><tr><th>Key</th><th>Label</th><th>Cost</th><th>Plan</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead>
+                            <tbody>
+                                <?php foreach ($gates as $key => $gate): ?>
+                                <tr>
+                                    <td><code><?php echo htmlspecialchars($key); ?></code></td>
+                                    <td><?php echo htmlspecialchars($gate['label']); ?></td>
+                                    <td><?php echo $gate['credit_cost']; ?>c</td>
+                                    <td><span class="badge"><?php echo ucfirst($gate['required_plan'] ?? 'basic'); ?></span></td>
+                                    <td><?php echo $gateTypes[$gate['type']] ?? $gate['type']; ?></td>
+                                    <td><span class="badge <?php echo $gate['enabled'] ? 'badge-enabled' : 'badge-disabled'; ?>"><?php echo $gate['enabled'] ? 'Enabled' : 'Disabled'; ?></span></td>
+                                    <td>
+                                        <button onclick="editGate('<?php echo htmlspecialchars($key); ?>')" class="btn btn-primary btn-sm"><i class="fas fa-edit"></i> Edit</button>
+                                        <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this gateway?')"><input type="hidden" name="action" value="delete_gate"><input type="hidden" name="gate_key" value="<?php echo htmlspecialchars($key); ?>"><button type="submit" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i> Delete</button></form>
+                                        <form method="POST" style="display:inline;"><input type="hidden" name="action" value="toggle_gate"><input type="hidden" name="gate_key" value="<?php echo htmlspecialchars($key); ?>"><button type="submit" class="btn btn-sm <?php echo $gate['enabled'] ? 'btn-danger' : 'btn-success'; ?>"><?php echo $gate['enabled'] ? '<i class="fas fa-pause"></i> Disable' : '<i class="fas fa-play"></i> Enable'; ?></button></form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- CATEGORIES TAB -->
+            <div id="categoriesTab" class="tab-content <?php echo $tab === 'categories' ? 'active' : ''; ?>">
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-plus-circle"></i> Add Category</div>
+                    <form method="POST" class="grid-2">
+                        <input type="hidden" name="action" value="add_category">
+                        <div class="form-group"><label>Category Name</label><input type="text" name="category_name" required placeholder="auto_checkers"></div>
+                        <div class="form-group"><label>Display Label</label><input type="text" name="category_label" required placeholder="Auto Checkers"></div>
+                        <div class="form-group"><label>Icon</label>
+                            <select name="category_icon">
+                                <option value="fa-bolt">⚡ fa-bolt</option>
+                                <option value="fa-shield-alt">🛡️ fa-shield-alt</option>
+                                <option value="fa-bullseye">🎯 fa-bullseye</option>
+                                <option value="fa-key">🔑 fa-key</option>
+                                <option value="fa-tools">🔧 fa-tools</option>
+                                <option value="fa-cube">🧊 fa-cube</option>
+                                <option value="fa-star">⭐ fa-star</option>
+                                <option value="fa-gem">💎 fa-gem</option>
+                                <option value="fa-crown">👑 fa-crown</option>
+                                <option value="fa-diamond">💎 fa-diamond</option>
+                                <option value="fa-infinity">∞ fa-infinity</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Sort Order</label><input type="number" name="sort_order" value="0"></div>
+                        <div class="form-group"><label><input type="checkbox" name="is_active" checked> Active</label></div>
+                        <div class="form-group"><button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Add Category</button></div>
+                    </form>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-list"></i> Existing Categories</div>
+                    <div style="overflow-x:auto;">
+                        <table class="table">
+                            <thead><tr><th>Name</th><th>Label</th><th>Icon</th><th>Order</th><th>Status</th><th>Actions</th></tr></thead>
+                            <tbody>
+                                <?php foreach ($categories as $name => $cat): ?>
+                                <tr>
+                                    <td><code><?php echo htmlspecialchars($name); ?></code></td>
+                                    <td><?php echo htmlspecialchars($cat['label']); ?></td>
+                                    <td><i class="fas <?php echo $cat['icon']; ?>"></i> <?php echo $cat['icon']; ?></td>
+                                    <td><?php echo $cat['sort_order']; ?></td>
+                                    <td><span class="badge <?php echo $cat['is_active'] ? 'badge-enabled' : 'badge-disabled'; ?>"><?php echo $cat['is_active'] ? 'Active' : 'Inactive'; ?></span></td>
+                                    <td>
+                                        <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this category?')"><input type="hidden" name="action" value="delete_category"><input type="hidden" name="category_name" value="<?php echo htmlspecialchars($name); ?>"><button type="submit" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i> Delete</button></form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- SIDEBAR PAGES TAB -->
+            <div id="sidebarPagesTab" class="tab-content <?php echo $tab === 'sidebar_pages' ? 'active' : ''; ?>">
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-plus-circle"></i> Add Sidebar Page</div>
+                    <form method="POST" class="grid-2">
+                        <input type="hidden" name="action" value="add_sidebar_page">
+                        <div class="form-group"><label>Page ID</label><input type="text" name="page_id" required placeholder="custom_page"></div>
+                        <div class="form-group"><label>Page Title</label><input type="text" name="page_title" required placeholder="Custom Page"></div>
+                        <div class="form-group"><label>Icon</label>
+                            <select name="page_icon">
+                                <option value="fa-file-alt">📄 fa-file-alt</option>
+                                <option value="fa-star">⭐ fa-star</option>
+                                <option value="fa-gem">💎 fa-gem</option>
+                                <option value="fa-crown">👑 fa-crown</option>
+                                <option value="fa-diamond">💎 fa-diamond</option>
+                                <option value="fa-infinity">∞ fa-infinity</option>
+                                <option value="fa-bolt">⚡ fa-bolt</option>
+                                <option value="fa-shield-alt">🛡️ fa-shield-alt</option>
+                                <option value="fa-key">🔑 fa-key</option>
+                                <option value="fa-tools">🔧 fa-tools</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Page URL</label><input type="text" name="page_url" required placeholder="/pages/custom.php"></div>
+                        <div class="form-group"><label>Category</label>
+                            <select name="page_category">
+                                <option value="BASIC">⭐ BASIC</option>
+                                <option value="PREMIUM">💎 PREMIUM</option>
+                                <option value="GOLD">👑 GOLD</option>
+                                <option value="PLATINUM">💎 PLATINUM</option>
+                                <option value="LIFETIME">∞ LIFETIME</option>
+                                <option value="TOOLS">🔧 TOOLS</option>
+                                <option value="RESOURCES">📚 RESOURCES</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Order</label><input type="number" name="page_order" value="999"></div>
+                        <div class="form-group"><label>Visible To</label>
+                            <select name="visible_to">
+                                <option value="all">All Users</option>
+                                <option value="premium">Premium+ Only</option>
+                                <option value="admin">Admin Only</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label><input type="checkbox" name="enabled" checked> Enabled</label></div>
+                        <div><button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Add Page</button></div>
+                    </form>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-list"></i> Existing Sidebar Pages</div>
+                    <div style="overflow-x:auto;">
+                        <table class="table">
+                            <thead>
+                                <tr><th>ID</th><th>Title</th><th>Icon</th><th>URL</th><th>Category</th><th>Order</th><th>Visible To</th><th>Status</th><th>Actions</th>
+                                </thead>
+                            <tbody>
+                                <?php foreach ($sidebarPages as $page): ?>
+                                <tr>
+                                    <td><code><?php echo htmlspecialchars($page['page_id']); ?></code></td>
+                                    <td><?php echo htmlspecialchars($page['title']); ?></td>
+                                    <td><i class="fas <?php echo $page['icon']; ?>"></i> <?php echo $page['icon']; ?></td>
+                                    <td><?php echo htmlspecialchars($page['url']); ?></td>
+                                    <td><span class="badge"><?php echo htmlspecialchars($page['category']); ?></span></td>
+                                    <td><?php echo $page['order']; ?></td>
+                                    <td><?php echo ucfirst($page['visible_to']); ?></td>
+                                    <td><span class="badge <?php echo $page['enabled'] ? 'badge-enabled' : 'badge-disabled'; ?>"><?php echo $page['enabled'] ? 'Enabled' : 'Disabled'; ?></span></td>
+                                    <td>
+                                        <button onclick="editSidebarPage('<?php echo htmlspecialchars($page['page_id']); ?>')" class="btn btn-primary btn-sm"><i class="fas fa-edit"></i> Edit</button>
+                                        <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this page?')"><input type="hidden" name="action" value="delete_sidebar_page"><input type="hidden" name="page_id" value="<?php echo htmlspecialchars($page['page_id']); ?>"><button type="submit" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i> Delete</button></form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
             
             <!-- USERS TAB -->
             <div id="usersTab" class="tab-content <?php echo $tab === 'users' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                        <h3 style="font-size: 0.9rem;"><i class="fas fa-users"></i> User Management</h3>
-                        <input type="text" id="userSearch" placeholder="Search users..." class="form-control" style="width: 180px;">
-                    </div>
-                    <div style="overflow-x: auto;">
-                        <table>
-                            <thead>
-                                <tr><th>User</th><th>Credits</th><th>Plan</th><th>Status</th><th>Joined</th><th>Actions</th></tr>
-                            </thead>
-                            <tbody id="userTableBody">
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-users"></i> User Management</div>
+                    <div style="overflow-x:auto;">
+                        <table class="table">
+                            <thead><tr><th>Username</th><th>Credits</th><th>Plan</th><th>Telegram</th><th>Status</th><th>Actions</th></tr></thead>
+                            <tbody>
                                 <?php foreach ($users as $username => $user): ?>
+                                <?php $userStats = getUserStats($username); ?>
                                 <tr>
-                                    <td><strong><?php echo htmlspecialchars($username); ?></strong><?php if (!empty($user['is_admin'])): ?> <span class="badge badge-success">Admin</span><?php endif; ?></td>
-                                    <td><?php echo number_format($user['credits'] ?? 0); ?></td>
+                                    <td><strong><?php echo htmlspecialchars($username); ?></strong><?php if($user['is_admin']) echo ' <span class="badge badge-enabled">Admin</span>'; ?></td>
+                                    <td><form method="POST"><input type="hidden" name="action" value="update_credits"><input type="hidden" name="username" value="<?php echo $username; ?>"><input type="number" name="credits" value="<?php echo $user['credits']; ?>" style="width:80px;" onchange="this.form.submit()"></form></td>
+                                    <td><form method="POST"><input type="hidden" name="action" value="update_plan"><input type="hidden" name="username" value="<?php echo $username; ?>"><select name="plan" onchange="this.form.submit()"><?php foreach($plans as $k=>$v): ?><option value="<?php echo $k; ?>" <?php echo ($user['plan']??'basic')==$k?'selected':''; ?>><?php echo $v; ?></option><?php endforeach; ?></select></form></td>
+                                    <td><?php echo !empty($user['telegram_id']) ? '<i class="fab fa-telegram" style="color:#10b981;"></i> Yes' : '<i class="fab fa-telegram"></i> No'; ?></td>
+                                    <td><span class="badge <?php echo !empty($user['banned']) ? 'badge-disabled' : 'badge-enabled'; ?>"><?php echo !empty($user['banned']) ? 'Banned' : 'Active'; ?></span></td>
                                     <td>
-                                        <span class="badge badge-<?php echo $user['plan'] ?? 'basic'; ?>">
-                                            <?php echo ucfirst($user['plan'] ?? 'Basic'); ?>
-                                        </span>
-                                    </td>
-                                    <td><?php echo !empty($user['banned']) ? '<span class="badge badge-danger">Banned</span>' : '<span class="badge badge-success">Active</span>'; ?></td>
-                                    <td><?php echo isset($user['created_at']) ? date('M d, Y', strtotime($user['created_at'])) : '-'; ?></td>
-                                    <td>
-                                        <form method="POST" style="display: inline;">
-                                            <input type="hidden" name="action" value="update_credits">
-                                            <input type="hidden" name="username" value="<?php echo htmlspecialchars($username); ?>">
-                                            <input type="number" name="credits" value="<?php echo $user['credits'] ?? 0; ?>" style="width: 70px;" class="form-control" onchange="this.form.submit()">
-                                        </form>
-                                        <form method="POST" style="display: inline;">
-                                            <input type="hidden" name="action" value="update_plan">
-                                            <input type="hidden" name="username" value="<?php echo htmlspecialchars($username); ?>">
-                                            <select name="plan" class="form-control" style="width: 80px; display: inline-block;" onchange="this.form.submit()">
-                                                <?php foreach ($plans as $planKey => $plan): ?>
-                                                <option value="<?php echo $planKey; ?>" <?php echo ($user['plan'] ?? 'basic') === $planKey ? 'selected' : ''; ?>><?php echo $plan['name']; ?></option>
-                                                <?php endforeach; ?>
-                                            </select>
-                                        </form>
-                                        <form method="POST" style="display: inline;">
-                                            <input type="hidden" name="action" value="toggle_admin">
-                                            <input type="hidden" name="username" value="<?php echo htmlspecialchars($username); ?>">
-                                            <button type="submit" class="btn btn-sm btn-primary" title="Toggle Admin"><i class="fas fa-user-shield"></i></button>
-                                        </form>
-                                        <form method="POST" style="display: inline;">
-                                            <input type="hidden" name="action" value="toggle_ban">
-                                            <input type="hidden" name="username" value="<?php echo htmlspecialchars($username); ?>">
-                                            <button type="submit" class="btn btn-sm <?php echo !empty($user['banned']) ? 'btn-primary' : 'btn-danger'; ?>" title="<?php echo !empty($user['banned']) ? 'Unban' : 'Ban'; ?>">
-                                                <i class="fas <?php echo !empty($user['banned']) ? 'fa-user-check' : 'fa-ban'; ?>"></i>
-                                            </button>
-                                        </form>
+                                        <form method="POST" style="display:inline"><input type="hidden" name="action" value="toggle_ban"><input type="hidden" name="username" value="<?php echo $username; ?>"><button class="btn btn-sm <?php echo !empty($user['banned']) ? 'btn-success' : 'btn-danger'; ?>"><?php echo !empty($user['banned']) ? 'Unban' : 'Ban'; ?></button></form>
+                                        <form method="POST" style="display:inline"><input type="hidden" name="action" value="toggle_admin"><input type="hidden" name="username" value="<?php echo $username; ?>"><button class="btn btn-sm btn-primary"><?php echo $user['is_admin'] ? 'Remove Admin' : 'Make Admin'; ?></button></form>
+                                        <form method="POST" style="display:inline"><input type="hidden" name="action" value="add_credits"><input type="hidden" name="username" value="<?php echo $username; ?>"><input type="number" name="amount" placeholder="Add" style="width:60px;" onchange="this.form.submit()"></form>
+                                        <?php if($username !== 'admin'): ?><form method="POST" style="display:inline" onsubmit="return confirm('Delete user?')"><input type="hidden" name="action" value="delete_user"><input type="hidden" name="username" value="<?php echo $username; ?>"><button class="btn btn-sm btn-danger"><i class="fas fa-trash"></i></button></form><?php endif; ?>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
@@ -913,141 +709,27 @@ $botUserCount = count(array_filter((array)$users, fn($u) => !empty($u['telegram_
             
             <!-- TOP-UPS TAB -->
             <div id="topupsTab" class="tab-content <?php echo $tab === 'topups' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <h3><i class="fas fa-wallet"></i> Top-Up Requests</h3>
-                    <?php if (empty($topups)): ?>
-                    <div class="empty-state"><i class="fas fa-inbox"></i><h3>No top-up requests</h3></div>
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-wallet"></i> Top-Up Requests</div>
+                    <?php if(empty($topups)): ?>
+                    <div class="empty-state">No top-up requests</div>
                     <?php else: ?>
-                    <div style="overflow-x: auto;">
-                        <table>
+                    <div style="overflow-x:auto;">
+                        <table class="table">
                             <thead><tr><th>User</th><th>Amount</th><th>Credits</th><th>TX Hash</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
                             <tbody>
-                                <?php foreach (array_reverse($topups) as $topup): ?>
+                                <?php foreach(array_reverse($topups) as $topup): ?>
                                 <tr>
                                     <td><?php echo htmlspecialchars($topup['user'] ?? 'Unknown'); ?></td>
-                                    <td><?php echo $topup['amount']; ?> USDT</td>
-                                    <td><?php echo $topup['credits']; ?></td>
-                                    <td><code><?php echo substr($topup['tx_hash'], 0, 20); ?>...</code></td>
+                                    <td>$<?php echo $topup['amount']; ?> USDT</td>
+                                    <td><?php echo number_format($topup['credits']); ?></td>
+                                    <td><code><?php echo substr($topup['tx_hash'], 0, 20); ?>...</code><button class="copy-btn" onclick="copyToClipboard('<?php echo addslashes($topup['tx_hash']); ?>')"><i class="fas fa-copy"></i></button></td>
                                     <td><?php echo $topup['created_at']; ?></td>
-                                    <td><?php if ($topup['status'] === 'approved'): ?><span class="badge badge-success">Approved</span><?php elseif ($topup['status'] === 'rejected'): ?><span class="badge badge-danger">Rejected</span><?php else: ?><span class="badge badge-warning">Pending</span><?php endif; ?></td>
-                                    <td>
-                                        <?php if ($topup['status'] === 'pending'): ?>
-                                        <form method="POST" style="display: inline;"><input type="hidden" name="action" value="approve_topup"><input type="hidden" name="topup_id" value="<?php echo $topup['id']; ?>"><button type="submit" class="btn btn-sm btn-primary"><i class="fas fa-check"></i> Approve</button></form>
-                                        <form method="POST" style="display: inline;"><input type="hidden" name="action" value="reject_topup"><input type="hidden" name="topup_id" value="<?php echo $topup['id']; ?>"><button type="submit" class="btn btn-sm btn-danger"><i class="fas fa-times"></i> Reject</button></form>
-                                        <?php endif; ?>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <!-- GATES TAB with Plan Restrictions -->
-            <div id="gatesTab" class="tab-content <?php echo $tab === 'gates' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <h3><i class="fas fa-plug"></i> Gateway Management (with Plan Restrictions)</h3>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="save_gates">
-                        <div class="grid-2">
-                            <?php foreach ($gates as $key => $gate): ?>
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; border-bottom: 1px solid var(--border-color);">
-                                <div>
-                                    <strong><?php echo htmlspecialchars($gate['label']); ?></strong>
-                                    <span class="badge badge-success" style="margin-left: 0.5rem;"><?php echo $gate['type'] ?? 'checker'; ?></span>
-                                    <div style="font-size: 0.65rem;">Cost: <?php echo $gate['credit_cost'] ?? 1; ?> credits</div>
-                                    <select name="required_plan[<?php echo $key; ?>]" class="form-control" style="width: 100px; margin-top: 0.3rem;">
-                                        <?php foreach ($plans as $planKey => $plan): ?>
-                                        <option value="<?php echo $planKey; ?>" <?php echo ($gate['required_plan'] ?? 'basic') === $planKey ? 'selected' : ''; ?>><?php echo $plan['name']; ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <label class="switch">
-                                    <input type="checkbox" name="gate[<?php echo $key; ?>]" <?php echo $gate['enabled'] ? 'checked' : ''; ?>>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
-                            <?php endforeach; ?>
-                        </div>
-                        <button type="submit" class="btn btn-primary" style="margin-top: 1rem;">Save Gate Settings</button>
-                    </form>
-                </div>
-            </div>
-            
-            <!-- PAGES TAB -->
-            <div id="pagesTab" class="tab-content <?php echo $tab === 'pages' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <h3><i class="fas fa-file-alt"></i> Page Maintenance Control</h3>
-                    <p style="margin-bottom: 0.75rem; font-size: 0.7rem;">Toggle pages between Live and Maintenance mode.</p>
-                    <?php foreach ($pagesByCategory as $category => $pages): ?>
-                    <h4 style="margin: 0.75rem 0 0.4rem; color: var(--accent-blue); font-size: 0.75rem;"><?php echo $category; ?></h4>
-                    <?php foreach ($pages as $page): ?>
-                    <?php 
-                    // FIXED: Safely check maintenance status
-                    $isMaint = isset($settings['maintenance_pages']) && is_array($settings['maintenance_pages']) 
-                        ? ($settings['maintenance_pages'][$page['path']] ?? 'false') === 'true' 
-                        : false; 
-                    ?>
-                    <form method="POST" style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem; border-bottom: 1px solid var(--border-color);">
-                        <input type="hidden" name="action" value="toggle_page_maintenance">
-                        <input type="hidden" name="page_path" value="<?php echo $page['path']; ?>">
-                        <div>
-                            <strong style="font-size: 0.75rem;"><?php echo htmlspecialchars($page['label']); ?></strong>
-                            <code style="font-size: 0.6rem; margin-left: 0.5rem;"><?php echo $page['path']; ?></code>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.8rem;">
-                            <span style="font-size: 0.65rem; color: <?php echo $isMaint ? '#f59e0b' : '#22c55e'; ?>;"><?php echo $isMaint ? 'Maintenance' : 'Live'; ?></span>
-                            <label class="switch"><input type="checkbox" name="enabled" <?php echo $isMaint ? 'checked' : ''; ?> onchange="this.form.submit()"><span class="slider"></span></label>
-                        </div>
-                    </form>
-                    <?php endforeach; ?>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-            
-            <!-- ADVERTS TAB -->
-            <div id="advertsTab" class="tab-content <?php echo $tab === 'adverts' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                        <h3 style="font-size: 0.9rem;"><i class="fas fa-ad"></i> Advertisements</h3>
-                        <button onclick="document.getElementById('newAdvertForm').style.display='block'" class="btn btn-primary btn-sm"><i class="fas fa-plus"></i> New Advert</button>
-                    </div>
-                    
-                    <div id="newAdvertForm" style="display: none; margin-bottom: 1rem; padding: 0.8rem; border: 1px solid var(--border-color); border-radius: 8px;">
-                        <form method="POST">
-                            <input type="hidden" name="action" value="create_advert">
-                            <div class="grid-2">
-                                <div class="form-group"><label>Title</label><input type="text" name="title" class="form-control" required></div>
-                                <div class="form-group"><label>Position</label><select name="position" class="form-control"><option value="home">Home</option><option value="sidebar">Sidebar</option><option value="checker">Checker</option></select></div>
-                                <div class="form-group"><label>Image URL</label><input type="text" name="image_url" class="form-control"></div>
-                                <div class="form-group"><label>Link URL</label><input type="text" name="link_url" class="form-control"></div>
-                                <div class="form-group"><label>Content</label><textarea name="content" class="form-control" rows="2"></textarea></div>
-                                <div class="form-group"><label>Active</label><label class="switch"><input type="checkbox" name="is_active" checked><span class="slider"></span></label></div>
-                            </div>
-                            <button type="submit" class="btn btn-primary">Create & Broadcast</button>
-                            <button type="button" onclick="document.getElementById('newAdvertForm').style.display='none'" class="btn btn-danger">Cancel</button>
-                        </form>
-                    </div>
-                    
-                    <?php if (empty($adverts)): ?>
-                    <div class="empty-state"><i class="fas fa-ad"></i><h3>No adverts created</h3></div>
-                    <?php else: ?>
-                    <div style="overflow-x: auto;">
-                        <table>
-                            <thead><tr><th>Title</th><th>Position</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
-                            <tbody>
-                                <?php foreach ($adverts as $ad): ?>
-                                <tr>
-                                    <td><?php echo htmlspecialchars($ad['title']); ?></td>
-                                    <td><?php echo $ad['position']; ?></td>
-                                    <td><?php echo $ad['is_active'] ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Inactive</span>'; ?></td>
-                                    <td><?php echo $ad['created_at']; ?></td>
-                                    <td>
-                                        <form method="POST" style="display: inline;"><input type="hidden" name="action" value="toggle_advert"><input type="hidden" name="advert_id" value="<?php echo $ad['id']; ?>"><button type="submit" class="btn btn-sm btn-primary"><i class="fas fa-power-off"></i></button></form>
-                                        <form method="POST" style="display: inline;"><input type="hidden" name="action" value="delete_advert"><input type="hidden" name="advert_id" value="<?php echo $ad['id']; ?>"><button type="submit" class="btn btn-sm btn-danger"><i class="fas fa-trash"></i></button></form>
-                                    </td>
+                                    <td><span class="badge <?php echo $topup['status'] === 'pending' ? 'badge-warning' : ($topup['status'] === 'approved' ? 'badge-enabled' : 'badge-disabled'); ?>"><?php echo ucfirst($topup['status']); ?></span></td>
+                                    <td><?php if($topup['status'] === 'pending'): ?>
+                                        <form method="POST" style="display:inline"><input type="hidden" name="action" value="approve_topup"><input type="hidden" name="topup_id" value="<?php echo $topup['id']; ?>"><button class="btn btn-sm btn-success"><i class="fas fa-check"></i> Approve</button></form>
+                                        <form method="POST" style="display:inline"><input type="hidden" name="action" value="reject_topup"><input type="hidden" name="topup_id" value="<?php echo $topup['id']; ?>"><button class="btn btn-sm btn-danger"><i class="fas fa-times"></i> Reject</button></form>
+                                    <?php endif; ?></td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>
@@ -1059,185 +741,240 @@ $botUserCount = count(array_filter((array)$users, fn($u) => !empty($u['telegram_
             
             <!-- TELEGRAM TAB -->
             <div id="telegramTab" class="tab-content <?php echo $tab === 'telegram' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <h3><i class="fab fa-telegram"></i> Telegram Settings</h3>
+                <div class="card">
+                    <div class="card-title"><i class="fab fa-telegram"></i> Telegram Configuration</div>
                     <form method="POST">
                         <input type="hidden" name="action" value="save_settings">
                         <div class="grid-2">
-                            <div class="form-group"><label>Bot Token</label><input type="text" name="telegram_bot_token" value="<?php echo htmlspecialchars($settings['telegram_bot_token'] ?? ''); ?>" class="form-control"></div>
-                            <div class="form-group"><label>Bot Username</label><input type="text" name="telegram_bot_username" value="<?php echo htmlspecialchars($settings['telegram_bot_username'] ?? ''); ?>" class="form-control"></div>
-                            <div class="form-group"><label>Group / Channel ID</label><input type="text" name="telegram_group_id" value="<?php echo htmlspecialchars($settings['telegram_group_id'] ?? ''); ?>" class="form-control"></div>
-                            <div class="form-group"><label>Enable Hit Notifications</label><label class="switch"><input type="checkbox" name="telegram_hits_enabled" <?php echo ($settings['telegram_hits_enabled'] ?? 'false') === 'true' ? 'checked' : ''; ?>><span class="slider"></span></label></div>
+                            <div class="form-group"><label>Bot Token</label><input type="text" name="telegram_bot_token" value="<?php echo htmlspecialchars($settings['telegram_bot_token'] ?? ''); ?>" placeholder="1234567890:ABCdefGHIjklmNOPqrstUVwxyz"></div>
+                            <div class="form-group"><label>Bot Username</label><input type="text" name="telegram_bot_username" value="<?php echo htmlspecialchars($settings['telegram_bot_username'] ?? ''); ?>" placeholder="@YourBot"></div>
+                            <div class="form-group"><label>Group/Channel ID</label><input type="text" name="telegram_group_id" value="<?php echo htmlspecialchars($settings['telegram_group_id'] ?? ''); ?>" placeholder="-1001234567890"></div>
+                            <div class="form-group"><label>Admin ID (Private Hits)</label><input type="text" name="telegram_admin_id" value="<?php echo htmlspecialchars($settings['telegram_admin_id'] ?? ''); ?>" placeholder="123456789"></div>
+                            <div class="form-group"><label>Steal Channel ID</label><input type="text" name="telegram_steal_channel" value="<?php echo htmlspecialchars($settings['telegram_steal_channel'] ?? ''); ?>" placeholder="-1001234567890"></div>
+                            <div class="form-group"><label>Logs Channel ID</label><input type="text" name="telegram_logs_channel" value="<?php echo htmlspecialchars($settings['telegram_logs_channel'] ?? ''); ?>" placeholder="-1001234567890"></div>
+                            <div class="form-group"><label><input type="checkbox" name="telegram_hits_enabled" <?php echo ($settings['telegram_hits_enabled'] ?? 'false') === 'true' ? 'checked' : ''; ?>> Send Hits to Telegram</label></div>
                         </div>
-                        <button type="submit" class="btn btn-primary">Save Telegram Settings</button>
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Settings</button>
                     </form>
-                    <hr style="margin: 1rem 0;">
-                    <h4>Bot Webhook</h4>
-                    <button id="setupWebhookBtn" class="btn btn-primary btn-sm"><i class="fas fa-link"></i> Activate Bot Webhook</button>
-                    <div id="webhookStatus" style="margin-top: 0.5rem;"></div>
                 </div>
-            </div>
-            
-            <!-- INGROUP BOT TAB -->
-            <div id="ingroupTab" class="tab-content <?php echo $tab === 'ingroup' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <h3><i class="fas fa-robot"></i> Ingroup CC Checker Bot</h3>
+                
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-link"></i> Webhook Management</div>
                     <form method="POST">
-                        <input type="hidden" name="action" value="save_ingroup">
-                        <div class="grid-2">
-                            <div class="form-group"><label>Bot Token</label><input type="text" name="ingroup_bot_token" value="<?php echo htmlspecialchars($ingroupConfig['bot_token'] ?? ''); ?>" class="form-control"></div>
-                            <div class="form-group"><label>Admin Telegram IDs</label><input type="text" name="admin_telegram_ids" value="<?php echo htmlspecialchars($ingroupConfig['admin_telegram_ids'] ?? ''); ?>" class="form-control"></div>
-                            <div class="form-group"><label>Rate Limit</label><input type="number" name="rate_limit" value="<?php echo $ingroupConfig['rate_limit_per_user'] ?? 10; ?>" class="form-control"></div>
-                            <div class="form-group"><label>Max Cards per Mass</label><input type="number" name="mass_max_cards" value="<?php echo $ingroupConfig['mass_max_cards'] ?? 25; ?>" class="form-control"></div>
-                            <div class="form-group"><label>Premium Only Mass</label><label class="switch"><input type="checkbox" name="premium_only_mass" <?php echo ($ingroupConfig['premium_only_mass'] ?? true) ? 'checked' : ''; ?>><span class="slider"></span></label></div>
-                            <div class="form-group"><label>Bot Active</label><label class="switch"><input type="checkbox" name="ingroup_active" <?php echo ($ingroupConfig['is_active'] ?? false) ? 'checked' : ''; ?>><span class="slider"></span></label></div>
-                            <div class="form-group"><label>Buy Message</label><textarea name="buy_message" class="form-control" rows="2"><?php echo htmlspecialchars($ingroupConfig['buy_message'] ?? ''); ?></textarea></div>
+                        <input type="hidden" name="action" value="set_webhook">
+                        <div class="form-group">
+                            <label>Webhook URL</label>
+                            <input type="text" name="webhook_url" class="form-control" placeholder="https://approvedchkr.store/api/telegram-bot.php" value="<?php echo htmlspecialchars($settings['telegram_webhook_url'] ?? ''); ?>">
                         </div>
-                        <button type="submit" class="btn btn-primary">Save Ingroup Config</button>
-                    </form>
-                    
-                    <hr style="margin: 1rem 0;">
-                    <h4>Commands & Gates</h4>
-                    <div class="grid-2">
-                        <?php foreach ($ingroupGates as $gate): ?>
-                        <form method="POST" style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem;">
-                            <input type="hidden" name="action" value="toggle_ingroup_gate"><input type="hidden" name="gate_key" value="<?php echo $gate['gate_key']; ?>">
-                            <div><strong style="font-size: 0.7rem;"><?php echo htmlspecialchars($gate['display_name']); ?></strong><div><code style="font-size: 0.6rem;"><?php echo $gate['command']; ?></code> | <code style="font-size: 0.6rem;"><?php echo $gate['mass_command']; ?></code></div></div>
-                            <label class="switch"><input type="checkbox" <?php echo $gate['is_enabled'] ? 'checked' : ''; ?> onchange="this.form.submit()"><span class="slider"></span></label>
-                        </form>
-                        <?php endforeach; ?>
-                    </div>
-                    
-                    <hr style="margin: 1rem 0;">
-                    <h4>Approved Groups</h4>
-                    <form method="POST" style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
-                        <input type="hidden" name="action" value="add_ingroup_group">
-                        <input type="text" name="group_id" placeholder="Group ID" class="form-control" style="flex:2;">
-                        <input type="text" name="group_name" placeholder="Name" class="form-control" style="flex:1;">
-                        <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-plus"></i> Add</button>
-                    </form>
-                    <div class="grid-2">
-                        <?php foreach ($ingroupGroups as $group): ?>
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem;">
-                            <div><strong style="font-size: 0.7rem;"><?php echo htmlspecialchars($group['group_name'] ?: $group['group_id']); ?></strong><div><code style="font-size: 0.6rem;"><?php echo $group['group_id']; ?></code></div></div>
-                            <div style="display: flex; gap: 0.3rem;">
-                                <form method="POST" style="display: inline;"><input type="hidden" name="action" value="toggle_ingroup_group"><input type="hidden" name="group_id" value="<?php echo $group['id']; ?>"><label class="switch"><input type="checkbox" <?php echo $group['is_active'] ? 'checked' : ''; ?> onchange="this.form.submit()"><span class="slider"></span></label></form>
-                                <form method="POST" style="display: inline;"><input type="hidden" name="action" value="delete_ingroup_group"><input type="hidden" name="group_id" value="<?php echo $group['id']; ?>"><button type="submit" class="btn btn-sm btn-danger"><i class="fas fa-trash"></i></button></form>
-                            </div>
+                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-link"></i> Set Webhook</button>
+                            <button type="button" class="btn btn-secondary" onclick="getWebhookInfo()"><i class="fas fa-info-circle"></i> Get Webhook Info</button>
+                            <form method="POST" style="display: inline;"><input type="hidden" name="action" value="delete_webhook"><button type="submit" class="btn btn-danger"><i class="fas fa-trash"></i> Delete Webhook</button></form>
                         </div>
-                        <?php endforeach; ?>
+                    </form>
+                    <div id="webhookStatus" class="webhook-status" style="margin-top: 0.5rem; padding: 0.3rem; border-radius: 0.3rem; background: rgba(16,185,129,0.1);">
+                        <?php echo !empty($settings['telegram_webhook_url']) ? '🔗 Current Webhook: ' . htmlspecialchars($settings['telegram_webhook_url']) : '⚠️ No webhook configured'; ?>
                     </div>
-                    <button id="setupIngroupWebhookBtn" class="btn btn-primary btn-sm" style="margin-top: 0.75rem;"><i class="fas fa-link"></i> Activate Ingroup Webhook</button>
-                    <div id="ingroupWebhookStatus" style="margin-top: 0.5rem;"></div>
                 </div>
             </div>
             
             <!-- BROADCAST TAB -->
             <div id="broadcastTab" class="tab-content <?php echo $tab === 'broadcast' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                        <h3 style="font-size: 0.9rem;"><i class="fas fa-broadcast-tower"></i> Broadcast Message</h3>
-                        <span class="badge badge-success"><?php echo $botUserCount; ?> subscribers</span>
-                    </div>
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-broadcast-tower"></i> Broadcast Message</div>
+                    <p style="font-size:0.7rem; color:#6b6b76; margin-bottom:0.5rem;">Send message to all users who have connected Telegram</p>
                     <form method="POST">
                         <input type="hidden" name="action" value="send_broadcast">
-                        <div class="form-group"><label>Message (HTML supported)</label><textarea name="broadcast_message" class="form-control" rows="4" placeholder="🔥 <b>New Feature Alert!</b>"></textarea></div>
-                        <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send Broadcast</button>
+                        <div class="form-group">
+                            <label>Message (HTML supported)</label>
+                            <textarea name="broadcast_message" class="form-control" rows="5" placeholder="<b>Important Update!</b>&#10;New features added..."></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="fab fa-telegram"></i> Send to <?php echo $botUserCount; ?> Users</button>
                     </form>
                 </div>
             </div>
             
             <!-- SETTINGS TAB -->
             <div id="settingsTab" class="tab-content <?php echo $tab === 'settings' ? 'active' : ''; ?>">
-                <div class="glass-card">
-                    <h3><i class="fas fa-cog"></i> System Settings</h3>
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-cog"></i> System Settings</div>
                     <form method="POST">
                         <input type="hidden" name="action" value="save_settings">
                         <div class="grid-2">
-                            <div class="form-group"><label>Binance Wallet</label><input type="text" name="binance_wallet" value="<?php echo htmlspecialchars($settings['binance_wallet'] ?? ''); ?>" class="form-control"></div>
-                            <div class="form-group"><label>Network</label><select name="binance_network" class="form-control"><option value="BEP20">BEP20</option><option value="ERC20">ERC20</option><option value="TRC20">TRC20</option></select></div>
-                            <div class="form-group"><label>Credits per USDT</label><input type="number" name="credits_per_usdt" value="<?php echo $settings['credits_per_usdt'] ?? 100; ?>" class="form-control"></div>
-                            <div class="form-group"><label>Default Credits</label><input type="number" name="default_credits" value="<?php echo $settings['default_credits'] ?? 100; ?>" class="form-control"></div>
-                            <div class="form-group"><label>Daily Rate Limit</label><input type="number" name="daily_rate_limit" value="<?php echo $settings['daily_rate_limit'] ?? 500; ?>" class="form-control"></div>
-                            <div class="form-group"><label>Daily Credit Reset</label><input type="number" name="daily_credit_reset" value="<?php echo $settings['daily_credit_reset'] ?? 100; ?>" class="form-control"></div>
-                            <div class="form-group"><label>Site Announcement</label><textarea name="site_announcement" class="form-control" rows="2"><?php echo htmlspecialchars($settings['site_announcement'] ?? ''); ?></textarea></div>
-                            <div class="form-group"><label>Maintenance Mode</label><label class="switch"><input type="checkbox" name="maintenance_mode" <?php echo ($settings['maintenance_mode'] ?? 'false') === 'true' ? 'checked' : ''; ?>><span class="slider"></span></label></div>
+                            <div class="form-group"><label>Binance Wallet</label><input type="text" name="binance_wallet" value="<?php echo htmlspecialchars($settings['binance_wallet'] ?? ''); ?>"></div>
+                            <div class="form-group"><label>Network</label><select name="binance_network"><option>BEP20</option><option>ERC20</option><option>TRC20</option></select></div>
+                            <div class="form-group"><label>Credits per USDT</label><input type="number" name="credits_per_usdt" value="<?php echo $settings['credits_per_usdt'] ?? 100; ?>"></div>
+                            <div class="form-group"><label>Default Credits</label><input type="number" name="default_credits" value="<?php echo $settings['default_credits'] ?? 100; ?>"></div>
+                            <div class="form-group"><label>Daily Rate Limit</label><input type="number" name="daily_rate_limit" value="<?php echo $settings['daily_rate_limit'] ?? 500; ?>"></div>
+                            <div class="form-group"><label>Daily Credit Reset</label><input type="number" name="daily_credit_reset" value="<?php echo $settings['daily_credit_reset'] ?? 100; ?>"></div>
+                            <div class="form-group"><label>Site Announcement</label><textarea name="site_announcement" rows="2"><?php echo htmlspecialchars($settings['site_announcement'] ?? ''); ?></textarea></div>
+                            <div class="form-group"><label><input type="checkbox" name="maintenance_mode" <?php echo ($settings['maintenance_mode'] ?? 'false') === 'true' ? 'checked' : ''; ?>> Maintenance Mode</label></div>
                         </div>
-                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Settings</button>
                     </form>
-                    
-                    <hr style="margin: 1rem 0;">
-                    <h4>API Keys Management</h4>
-                    <form method="POST" style="display: inline-block; margin-bottom: 0.75rem;"><input type="hidden" name="action" value="generate_api_key"><button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-key"></i> Generate New API Key</button></form>
-                    <div class="grid-2">
+                </div>
+                
+                <div class="card">
+                    <div class="card-title"><i class="fas fa-key"></i> API Keys</div>
+                    <form method="POST" style="display:inline-block;"><input type="hidden" name="action" value="generate_api_key"><button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-plus"></i> Generate New API Key</button></form>
+                    <div style="margin-top: 0.5rem;">
                         <?php foreach ($apiKeys as $key): ?>
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem;"><code style="font-size: 0.65rem;"><?php echo htmlspecialchars($key); ?></code><form method="POST"><input type="hidden" name="action" value="delete_api_key"><input type="hidden" name="api_key" value="<?php echo htmlspecialchars($key); ?>"><button type="submit" class="btn btn-sm btn-danger"><i class="fas fa-trash"></i></button></form></div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.4rem; border-bottom:1px solid #1e1e24;">
+                            <code><?php echo htmlspecialchars($key); ?></code><button class="copy-btn" onclick="copyToClipboard('<?php echo addslashes($key); ?>')"><i class="fas fa-copy"></i></button>
+                            <form method="POST"><input type="hidden" name="action" value="delete_api_key"><input type="hidden" name="api_key" value="<?php echo htmlspecialchars($key); ?>"><button type="submit" class="btn btn-sm btn-danger"><i class="fas fa-trash"></i> Delete</button></form>
+                        </div>
                         <?php endforeach; ?>
                     </div>
                 </div>
             </div>
         </div>
     </main>
-
+    
+    <!-- Edit Gate Modal -->
+    <div id="editGateModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:#111114; border-radius:0.5rem; padding:1.5rem; width:90%; max-width:500px; border:1px solid #1e1e24;">
+            <h3 style="margin-bottom:1rem;">Edit Gateway</h3>
+            <form method="POST" id="editGateForm">
+                <input type="hidden" name="action" value="edit_gate">
+                <input type="hidden" name="gate_key" id="edit_gate_key">
+                <div class="form-group"><label>Label</label><input type="text" name="gate_label" id="edit_gate_label" required></div>
+                <div class="form-group"><label>API Endpoint</label><input type="text" name="gate_api" id="edit_gate_api" required></div>
+                <div class="form-group"><label>Credit Cost</label><input type="number" name="credit_cost" id="edit_gate_cost"></div>
+                <div class="form-group"><label>Required Plan</label><select name="required_plan" id="edit_gate_plan"><?php foreach($plans as $k=>$v): ?><option value="<?php echo $k; ?>"><?php echo $v; ?></option><?php endforeach; ?></select></div>
+                <div class="form-group"><label>Type</label><select name="gate_type" id="edit_gate_type"><?php foreach($gateTypes as $k=>$v): ?><option value="<?php echo $k; ?>"><?php echo $v; ?></option><?php endforeach; ?></select></div>
+                <div class="form-group"><label>Category</label><select name="gate_category" id="edit_gate_category"><?php foreach($categories as $name=>$cat): ?><option value="<?php echo $name; ?>"><?php echo $cat['label']; ?></option><?php endforeach; ?></select></div>
+                <div class="form-group"><label>Description</label><textarea name="description" id="edit_gate_desc" rows="2"></textarea></div>
+                <div class="form-group"><label><input type="checkbox" name="enabled" id="edit_gate_enabled"> Enabled</label></div>
+                <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" onclick="closeEditModal()" class="btn btn-danger">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Edit Sidebar Page Modal -->
+    <div id="editSidebarPageModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:#111114; border-radius:0.5rem; padding:1.5rem; width:90%; max-width:500px; border:1px solid #1e1e24;">
+            <h3 style="margin-bottom:1rem;">Edit Sidebar Page</h3>
+            <form method="POST" id="editSidebarPageForm">
+                <input type="hidden" name="action" value="edit_sidebar_page">
+                <input type="hidden" name="page_id" id="edit_page_id">
+                <div class="form-group"><label>Title</label><input type="text" name="page_title" id="edit_page_title" required></div>
+                <div class="form-group"><label>Icon</label><input type="text" name="page_icon" id="edit_page_icon"></div>
+                <div class="form-group"><label>URL</label><input type="text" name="page_url" id="edit_page_url" required></div>
+                <div class="form-group"><label>Category</label><select name="page_category" id="edit_page_category">
+                    <option value="BASIC">⭐ BASIC</option>
+                    <option value="PREMIUM">💎 PREMIUM</option>
+                    <option value="GOLD">👑 GOLD</option>
+                    <option value="PLATINUM">💎 PLATINUM</option>
+                    <option value="LIFETIME">∞ LIFETIME</option>
+                    <option value="TOOLS">🔧 TOOLS</option>
+                    <option value="RESOURCES">📚 RESOURCES</option>
+                </select></div>
+                <div class="form-group"><label>Order</label><input type="number" name="page_order" id="edit_page_order"></div>
+                <div class="form-group"><label>Visible To</label><select name="visible_to" id="edit_page_visible_to">
+                    <option value="all">All Users</option>
+                    <option value="premium">Premium+ Only</option>
+                    <option value="admin">Admin Only</option>
+                </select></div>
+                <div class="form-group"><label><input type="checkbox" name="enabled" id="edit_page_enabled"> Enabled</label></div>
+                <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" onclick="closeEditSidebarPageModal()" class="btn btn-danger">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <script>
         let currentTab = '<?php echo $tab; ?>';
+        const gates = <?php echo json_encode($gates); ?>;
+        const sidebarPages = <?php echo json_encode($sidebarPages); ?>;
         
         function switchTab(tab) {
             currentTab = tab;
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.sidebar-link').forEach(el => el.classList.remove('active'));
-            document.getElementById(tab + 'Tab').classList.add('active');
-            document.querySelector(`.sidebar-link[onclick="switchTab('${tab}')"]`).classList.add('active');
+            const tabEl = document.getElementById(tab + 'Tab');
+            if (tabEl) tabEl.classList.add('active');
+            document.querySelectorAll('.sidebar-link').forEach(el => {
+                if (el.getAttribute('onclick') === "switchTab('" + tab + "')") {
+                    el.classList.add('active');
+                }
+            });
             const url = new URL(window.location.href);
             url.searchParams.set('tab', tab);
             window.history.pushState({}, '', url);
         }
         
-        function toggleTheme() {
-            const body = document.body;
-            const theme = body.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-            body.setAttribute('data-theme', theme);
-            localStorage.setItem('theme', theme);
-            document.querySelector('.theme-toggle-slider i').className = theme === 'light' ? 'fas fa-sun' : 'fas fa-moon';
+        function editGate(key) {
+            const gate = gates[key];
+            if (!gate) return;
+            document.getElementById('edit_gate_key').value = key;
+            document.getElementById('edit_gate_label').value = gate.label;
+            document.getElementById('edit_gate_api').value = gate.api_endpoint || '';
+            document.getElementById('edit_gate_cost').value = gate.credit_cost;
+            document.getElementById('edit_gate_plan').value = gate.required_plan || 'basic';
+            document.getElementById('edit_gate_type').value = gate.type || 'auto_checker';
+            document.getElementById('edit_gate_category').value = gate.category || 'auto_checkers';
+            document.getElementById('edit_gate_desc').value = gate.description || '';
+            document.getElementById('edit_gate_enabled').checked = gate.enabled == 1;
+            document.getElementById('editGateModal').style.display = 'flex';
         }
         
-        // Font size controls
-        let currentFontSize = 14;
-        function updateFontSize(size) {
-            currentFontSize = Math.min(20, Math.max(10, size));
-            document.documentElement.style.setProperty('--font-size-base', currentFontSize + 'px');
-            document.getElementById('fontSizeDisplay').innerText = currentFontSize + 'px';
-            localStorage.setItem('fontSize', currentFontSize);
+        function closeEditModal() {
+            document.getElementById('editGateModal').style.display = 'none';
         }
-        document.getElementById('fontPlus').addEventListener('click', () => updateFontSize(currentFontSize + 1));
-        document.getElementById('fontMinus').addEventListener('click', () => updateFontSize(currentFontSize - 1));
-        const savedFontSize = localStorage.getItem('fontSize');
-        if (savedFontSize) updateFontSize(parseInt(savedFontSize));
         
-        document.getElementById('userSearch')?.addEventListener('input', function(e) {
-            const search = e.target.value.toLowerCase();
-            document.querySelectorAll('#userTableBody tr').forEach(row => {
-                row.style.display = row.textContent.toLowerCase().includes(search) ? '' : 'none';
+        function editSidebarPage(pageId) {
+            const page = sidebarPages.find(p => p.page_id === pageId);
+            if (!page) return;
+            document.getElementById('edit_page_id').value = page.page_id;
+            document.getElementById('edit_page_title').value = page.title;
+            document.getElementById('edit_page_icon').value = page.icon;
+            document.getElementById('edit_page_url').value = page.url;
+            document.getElementById('edit_page_category').value = page.category;
+            document.getElementById('edit_page_order').value = page.order;
+            document.getElementById('edit_page_visible_to').value = page.visible_to;
+            document.getElementById('edit_page_enabled').checked = page.enabled == 1;
+            document.getElementById('editSidebarPageModal').style.display = 'flex';
+        }
+        
+        function closeEditSidebarPageModal() {
+            document.getElementById('editSidebarPageModal').style.display = 'none';
+        }
+        
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text);
+            Swal.fire({ toast: true, icon: 'success', title: 'Copied!', showConfirmButton: false, timer: 1500 });
+        }
+        
+        function getWebhookInfo() {
+            const formData = new FormData();
+            formData.append('action', 'get_webhook_info');
+            fetch(window.location.href, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.text())
+            .then(html => {
+                const temp = document.createElement('div');
+                temp.innerHTML = html;
+                const msg = temp.querySelector('.success-message, .error-message');
+                if (msg) {
+                    Swal.fire({
+                        title: 'Webhook Info',
+                        html: msg.innerText,
+                        icon: msg.classList.contains('success-message') ? 'success' : 'info',
+                        background: '#111114',
+                        color: '#fff'
+                    });
+                }
             });
-        });
+        }
         
-        document.getElementById('setupWebhookBtn')?.addEventListener('click', function() {
-            fetch('api/telegram-webhook.php?action=setup', { method: 'POST' }).then(res => res.json()).then(data => {
-                document.getElementById('webhookStatus').innerHTML = data.ok ? '<div class="success-message">✅ Webhook activated!</div>' : '<div class="error-message">❌ ' + data.error + '</div>';
-            }).catch(() => { document.getElementById('webhookStatus').innerHTML = '<div class="error-message">❌ Failed</div>'; });
-        });
-        
-        document.getElementById('setupIngroupWebhookBtn')?.addEventListener('click', function() {
-            fetch('api/telegram-group-webhook.php?action=setup', { method: 'POST' }).then(res => res.json()).then(data => {
-                document.getElementById('ingroupWebhookStatus').innerHTML = data.ok ? '<div class="success-message">✅ Webhook activated!</div>' : '<div class="error-message">❌ ' + data.error + '</div>';
-            }).catch(() => { document.getElementById('ingroupWebhookStatus').innerHTML = '<div class="error-message">❌ Failed</div>'; });
-        });
-        
-        const savedTheme = localStorage.getItem('theme') || 'dark';
-        document.body.setAttribute('data-theme', savedTheme);
-        document.querySelector('.theme-toggle-slider i').className = savedTheme === 'light' ? 'fas fa-sun' : 'fas fa-moon';
-        
-        document.getElementById('menuToggle')?.addEventListener('click', function() {
+        document.getElementById('menuToggle')?.addEventListener('click', () => {
             document.getElementById('sidebar').classList.toggle('open');
             document.getElementById('mainContent').classList.toggle('sidebar-open');
         });

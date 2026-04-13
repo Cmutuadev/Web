@@ -1,7 +1,6 @@
 <?php
 require_once 'includes/config.php';
 
-// Handle logout FIRST
 if (isset($_GET['logout']) && $_GET['logout'] == '1') {
     session_destroy();
     header('Location: login.php');
@@ -22,12 +21,13 @@ if (isBanned()) {
 $page = $_GET['page'] ?? 'home';
 
 $allowedPages = [
-    'home', 'shopify', 'stripe-auth', 'razorpay',
+    'home', 'topup', 'universal',
+    'shopify', 'stripe-auth', 'razorpay',
     'auth', 'charge', 'auth-charge',
     'stripe-checkout', 'stripe-invoice', 'stripe-inbuilt',
     'key-stripe', 'key-paypal',
     'address-gen', 'bin-lookup', 'cc-cleaner', 'cc-generator', 'proxy-checker', 'vbv-checker',
-    'proxies', 'assets', 'topup'
+    'proxies', 'assets'
 ];
 
 if (!in_array($page, $allowedPages)) {
@@ -35,8 +35,21 @@ if (!in_array($page, $allowedPages)) {
 }
 
 $user = $_SESSION['user'];
+
+// Fix: Ensure user data is properly formatted
+if (is_array($user['plan'] ?? null)) {
+    $user['plan'] = 'basic';
+}
+if (is_array($user['display_name'] ?? null)) {
+    $user['display_name'] = 'User';
+}
+if (is_array($user['name'] ?? null)) {
+    $user['name'] = 'User';
+}
+
 $credits = getUserCredits();
 $isAdmin = isAdmin();
+$userPlan = is_string($user['plan'] ?? 'basic') ? $user['plan'] : 'basic';
 
 $creditHistory = loadCreditHistory();
 $userHistory = array_filter($creditHistory, function($h) use ($user) {
@@ -50,7 +63,6 @@ $successRate = $totalChecks > 0 ? round(($approvedChecks / $totalChecks) * 100) 
 $memberDays = isset($user['created_at']) ? floor((time() - strtotime($user['created_at'])) / 86400) : 0;
 $recentActivity = array_slice(array_reverse($userHistory), 0, 5);
 
-// Get all users for leaderboard
 $allUsers = loadUsers();
 $leaderboard = [];
 foreach ($allUsers as $username => $u) {
@@ -59,12 +71,18 @@ foreach ($allUsers as $username => $u) {
         $leaderboard[] = [
             'name' => $u['display_name'] ?? $username,
             'hits' => $userStats['approved_checks'],
-            'plan' => $u['plan'] ?? 'basic'
+            'plan' => is_string($u['plan'] ?? 'basic') ? $u['plan'] : 'basic'
         ];
     }
 }
 usort($leaderboard, fn($a, $b) => $b['hits'] - $a['hits']);
 $topPerformers = array_slice($leaderboard, 0, 5);
+
+// Security headers
+header("X-Frame-Options: DENY");
+header("X-Content-Type-Options: nosniff");
+header("X-XSS-Protection: 1; mode=block");
+header("Referrer-Policy: strict-origin-when-cross-origin");
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -82,62 +100,15 @@ $topPerformers = array_slice($leaderboard, 0, 5);
             --bg: #0a0a0f; --card: #111114; --border: #1e1e24; --text: #ffffff;
             --text-muted: #6b6b76; --primary: #8b5cf6; --success: #10b981;
             --danger: #ef4444; --warning: #f59e0b;
+            --font-size: 14px;
         }
         [data-theme="light"] { --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0; --text: #0f172a; --text-muted: #64748b; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; position: relative; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; position: relative; font-size: var(--font-size); }
         #particle-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
         
-        /* Navbar */
-        .navbar { position: fixed; top: 0; left: 0; right: 0; height: 55px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 1rem; z-index: 100; }
-        .menu-btn { background: none; border: none; color: var(--text); font-size: 1.1rem; cursor: pointer; padding: 0.4rem; border-radius: 0.4rem; }
-        .logo { display: flex; align-items: center; gap: 0.5rem; }
-        .logo-icon { width: 30px; height: 30px; background: linear-gradient(135deg, var(--primary), #06b6d4); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
-        .logo-icon i { color: white; font-size: 0.9rem; }
-        .logo-text span:first-child { font-weight: 700; font-size: 0.85rem; background: linear-gradient(135deg, var(--primary), #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .logo-text span:last-child { font-size: 0.6rem; color: var(--text-muted); display: block; }
-        .theme-btn { background: none; border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.3rem 0.5rem; cursor: pointer; color: var(--text-muted); }
-        .user-menu { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.2rem 0.6rem; border-radius: 2rem; background: var(--bg); border: 1px solid var(--border); }
-        .user-avatar-small { width: 28px; height: 28px; background: linear-gradient(135deg, var(--primary), #7c3aed); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.7rem; color: white; }
-        .user-dropdown { position: absolute; top: 50px; right: 1rem; background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.3rem; min-width: 140px; display: none; z-index: 101; }
-        .user-dropdown.show { display: block; }
-        .user-dropdown a { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; text-decoration: none; color: var(--text); font-size: 0.7rem; border-radius: 0.3rem; }
-        .user-dropdown a:hover { background: var(--bg); }
-        .user-dropdown hr { margin: 0.2rem 0; border-color: var(--border); }
-        
-        /* Sidebar */
-        .sidebar { position: fixed; left: 0; top: 55px; bottom: 0; width: 260px; background: var(--card); border-right: 1px solid var(--border); transform: translateX(-100%); transition: transform 0.2s; z-index: 99; overflow-y: auto; }
-        .sidebar.open { transform: translateX(0); }
-        .sidebar-content { padding: 1rem; }
-        .sidebar-user { display: flex; align-items: center; gap: 0.7rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
-        .sidebar-avatar { width: 45px; height: 45px; background: linear-gradient(135deg, var(--primary), #7c3aed); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; color: white; }
-        .sidebar-user-name { font-weight: 600; font-size: 0.85rem; }
-        .sidebar-user-plan { font-size: 0.6rem; color: var(--primary); background: rgba(139,92,246,0.15); display: inline-block; padding: 0.1rem 0.4rem; border-radius: 12px; margin-top: 0.2rem; }
-        
-        .nav-item { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.7rem; border-radius: 0.5rem; color: var(--text-muted); text-decoration: none; margin-bottom: 0.2rem; }
-        .nav-item:hover { background: rgba(139,92,246,0.1); color: var(--primary); }
-        .nav-item.active { background: linear-gradient(135deg, var(--primary), #7c3aed); color: white; }
-        .nav-item i { width: 20px; font-size: 0.9rem; }
-        .nav-item span { font-size: 0.8rem; }
-        
-        .nav-divider { font-size: 0.6rem; color: var(--text-muted); padding: 0.6rem 0.7rem 0.3rem; text-transform: uppercase; letter-spacing: 0.5px; }
-        
-        .nav-group { margin-bottom: 0.2rem; }
-        .nav-group-header { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.7rem; border-radius: 0.5rem; cursor: pointer; color: var(--text-muted); }
-        .nav-group-header:hover { background: rgba(139,92,246,0.1); color: var(--primary); }
-        .nav-group-header i:first-child { width: 20px; }
-        .nav-group-arrow { font-size: 0.7rem; transition: transform 0.2s; }
-        .nav-group-arrow.open { transform: rotate(180deg); }
-        .nav-group-content { padding-left: 1.8rem; display: none; }
-        .nav-subitem { display: block; padding: 0.4rem 0.7rem; text-decoration: none; color: var(--text-muted); font-size: 0.75rem; border-radius: 0.4rem; }
-        .nav-subitem:hover { background: rgba(139,92,246,0.1); color: var(--primary); }
-        .nav-subitem i { width: 20px; font-size: 0.7rem; margin-right: 0.5rem; }
-        
-        .logout-item { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.7rem; color: var(--danger); }
-        .logout-item:hover { background: rgba(239,68,68,0.1); color: var(--danger); }
-        
         /* Main Content */
-        .main { margin-left: 0; margin-top: 55px; padding: 1.2rem; transition: margin-left 0.2s; min-height: calc(100vh - 55px); position: relative; z-index: 1; }
-        .main.sidebar-open { margin-left: 260px; }
+        .main { margin-left: 0; margin-top: 60px; padding: 1.2rem; transition: margin-left 0.2s; min-height: calc(100vh - 60px); position: relative; z-index: 1; }
+        .main.sidebar-open { margin-left: 280px; }
         @media (max-width: 768px) { .main.sidebar-open { margin-left: 0; } }
         .container { max-width: 1400px; margin: 0 auto; }
         
@@ -207,111 +178,11 @@ $topPerformers = array_slice($leaderboard, 0, 5);
 <body data-theme="dark">
     <canvas id="particle-canvas"></canvas>
     
-    <!-- Navbar -->
-    <nav class="navbar">
-        <div style="display: flex; align-items: center; gap: 0.8rem;">
-            <button class="menu-btn" id="menuBtn"><i class="fas fa-bars"></i></button>
-            <div class="logo">
-                <div class="logo-icon"><i class="fas fa-credit-card"></i></div>
-                <div class="logo-text"><span>APPROVED</span><span>CHECKER</span></div>
-            </div>
-        </div>
-        <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <button class="theme-btn" id="themeBtn"><i class="fas fa-moon"></i></button>
-            <div class="user-menu" id="userMenu">
-                <div class="user-avatar-small"><?php echo strtoupper(substr($user['display_name'] ?? $user['name'], 0, 1)); ?></div>
-                <div><span style="font-size:0.7rem; font-weight:500;"><?php echo htmlspecialchars($user['display_name'] ?? $user['name']); ?></span><span style="font-size:0.55rem; color:var(--text-muted); display:block;"><i class="fas fa-coins"></i> <?php echo $isAdmin ? '∞' : number_format($credits); ?></span></div>
-                <i class="fas fa-chevron-down" style="font-size:0.6rem;"></i>
-            </div>
-            <div class="user-dropdown" id="userDropdown">
-                <a href="index.php?page=home"><i class="fas fa-user"></i> Profile</a>
-                <a href="topup.php"><i class="fas fa-wallet"></i> Top Up</a>
-                <?php if ($isAdmin): ?>
-                <a href="adminaccess_panel.php"><i class="fas fa-crown"></i> Admin Panel</a>
-                <?php endif; ?>
-                <hr>
-                <a href="?logout=1"><i class="fas fa-sign-out-alt"></i> Logout</a>
-            </div>
-        </div>
-    </nav>
-
+    <!-- Header -->
+    <?php include __DIR__ . "/includes/header.php"; ?>
+    
     <!-- Sidebar -->
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-content">
-            <div class="sidebar-user">
-                <div class="sidebar-avatar"><?php echo strtoupper(substr($user['display_name'] ?? $user['name'], 0, 1)); ?></div>
-                <div><div class="sidebar-user-name"><?php echo htmlspecialchars($user['display_name'] ?? $user['name']); ?></div><div class="sidebar-user-plan"><?php echo ucfirst($user['plan'] ?? 'Basic'); ?> Plan</div></div>
-            </div>
-            
-            <a href="index.php?page=home" class="nav-item <?php echo $page === 'home' ? 'active' : ''; ?>"><i class="fas fa-chart-line"></i><span>Dashboard</span></a>
-            <a href="topup.php" class="nav-item <?php echo $page === 'topup' ? 'active' : ''; ?>"><i class="fas fa-wallet"></i><span>Top Up Credits</span></a>
-            
-            <div class="nav-divider">CHECKERS</div>
-            
-            <div class="nav-group">
-                <div class="nav-group-header" onclick="toggleGroup('auto-checkers')"><div><i class="fas fa-bolt"></i> Auto Checkers</div><i class="fas fa-chevron-down nav-group-arrow" id="arrow-auto-checkers"></i></div>
-                <div class="nav-group-content" id="group-auto-checkers">
-                    <a href="index.php?page=shopify" class="nav-subitem"><i class="fab fa-shopify"></i> Shopify</a>
-                    <a href="index.php?page=stripe-auth" class="nav-subitem"><i class="fab fa-stripe"></i> Stripe Auth</a>
-                    <a href="index.php?page=razorpay" class="nav-subitem"><i class="fas fa-rupee-sign"></i> Razorpay</a>
-                </div>
-            </div>
-            
-            <div class="nav-group">
-                <div class="nav-group-header" onclick="toggleGroup('checkers')"><div><i class="fas fa-shield-alt"></i> Checkers</div><i class="fas fa-chevron-down nav-group-arrow" id="arrow-checkers"></i></div>
-                <div class="nav-group-content" id="group-checkers">
-                    <a href="index.php?page=auth" class="nav-subitem"><i class="fas fa-shield-alt"></i> Auth Checker</a>
-                    <a href="index.php?page=charge" class="nav-subitem"><i class="fas fa-bolt"></i> Charge Checker</a>
-                    <a href="index.php?page=auth-charge" class="nav-subitem"><i class="fas fa-layer-group"></i> Auth+Charge</a>
-                </div>
-            </div>
-            
-            <div class="nav-group">
-                <div class="nav-group-header" onclick="toggleGroup('hitters')"><div><i class="fas fa-bullseye"></i> Hitters</div><i class="fas fa-chevron-down nav-group-arrow" id="arrow-hitters"></i></div>
-                <div class="nav-group-content" id="group-hitters">
-                    <a href="index.php?page=stripe-checkout" class="nav-subitem"><i class="fas fa-shopping-cart"></i> Stripe Checkout</a>
-                    <a href="index.php?page=stripe-invoice" class="nav-subitem"><i class="fas fa-file-invoice"></i> Stripe Invoice</a>
-                    <a href="index.php?page=stripe-inbuilt" class="nav-subitem"><i class="fas fa-code"></i> Stripe Inbuilt</a>
-                </div>
-            </div>
-            
-            <div class="nav-group">
-                <div class="nav-group-header" onclick="toggleGroup('key-based')"><div><i class="fas fa-key"></i> Key Based</div><i class="fas fa-chevron-down nav-group-arrow" id="arrow-key-based"></i></div>
-                <div class="nav-group-content" id="group-key-based">
-                    <a href="index.php?page=key-stripe" class="nav-subitem"><i class="fab fa-stripe"></i> Stripe API</a>
-                    <a href="index.php?page=key-paypal" class="nav-subitem"><i class="fab fa-paypal"></i> PayPal API</a>
-                </div>
-            </div>
-            
-            <div class="nav-divider">TOOLS</div>
-            
-            <div class="nav-group">
-                <div class="nav-group-header" onclick="toggleGroup('tools')"><div><i class="fas fa-tools"></i> Tools</div><i class="fas fa-chevron-down nav-group-arrow" id="arrow-tools"></i></div>
-                <div class="nav-group-content" id="group-tools">
-                    <a href="index.php?page=address-gen" class="nav-subitem"><i class="fas fa-address-card"></i> Address Generator</a>
-                    <a href="index.php?page=bin-lookup" class="nav-subitem"><i class="fas fa-search"></i> BIN Lookup</a>
-                    <a href="index.php?page=cc-cleaner" class="nav-subitem"><i class="fas fa-broom"></i> CC Cleaner</a>
-                    <a href="index.php?page=cc-generator" class="nav-subitem"><i class="fas fa-magic"></i> CC Generator</a>
-                    <a href="index.php?page=proxy-checker" class="nav-subitem"><i class="fas fa-globe"></i> Proxy Checker</a>
-                    <a href="index.php?page=vbv-checker" class="nav-subitem"><i class="fas fa-shield-alt"></i> VBV Checker</a>
-                </div>
-            </div>
-            
-            <div class="nav-group">
-                <div class="nav-group-header" onclick="toggleGroup('preferences')"><div><i class="fas fa-sliders-h"></i> Preferences</div><i class="fas fa-chevron-down nav-group-arrow" id="arrow-preferences"></i></div>
-                <div class="nav-group-content" id="group-preferences">
-                    <a href="index.php?page=proxies" class="nav-subitem"><i class="fas fa-network-wired"></i> Proxies</a>
-                    <a href="index.php?page=assets" class="nav-subitem"><i class="fas fa-database"></i> Assets</a>
-                </div>
-            </div>
-            
-            <div class="nav-divider">PLATFORM</div>
-            <?php if ($isAdmin): ?>
-            <a href="adminaccess_panel.php" class="nav-item"><i class="fas fa-crown"></i><span>Admin Panel</span></a>
-            <?php endif; ?>
-            <a href="?logout=1" class="nav-item logout-item"><i class="fas fa-sign-out-alt"></i><span>Logout</span></a>
-        </div>
-    </aside>
+    <?php include __DIR__ . "/includes/sidebar.php"; ?>
 
     <!-- Main Content -->
     <main class="main" id="main">
@@ -329,19 +200,19 @@ $topPerformers = array_slice($leaderboard, 0, 5);
                 
                 <div class="quick-actions">
                     <div class="action-card" onclick="window.location.href='topup.php'"><div class="action-icon"><i class="fas fa-wallet"></i></div><div class="action-title">Top Up</div><div class="action-desc">Add credits</div></div>
-                    <div class="action-card" onclick="window.location.href='index.php?page=shopify'"><div class="action-icon"><i class="fab fa-shopify"></i></div><div class="action-title">Shopify</div><div class="action-desc">Check cards</div></div>
-                    <div class="action-card" onclick="window.location.href='index.php?page=stripe-auth'"><div class="action-icon"><i class="fab fa-stripe"></i></div><div class="action-title">Stripe Auth</div><div class="action-desc">Auth checker</div></div>
-                    <div class="action-card" onclick="window.location.href='index.php?page=razorpay'"><div class="action-icon"><i class="fas fa-rupee-sign"></i></div><div class="action-title">Razorpay</div><div class="action-desc">Auto checker</div></div>
+                    <div class="action-card" onclick="window.location.href='index.php?page=universal&gate=shopify'"><div class="action-icon"><i class="fab fa-shopify"></i></div><div class="action-title">Shopify</div><div class="action-desc">Check cards</div></div>
+                    <div class="action-card" onclick="window.location.href='index.php?page=universal&gate=stripe_auth'"><div class="action-icon"><i class="fab fa-stripe"></i></div><div class="action-title">Stripe Auth</div><div class="action-desc">Auth checker</div></div>
+                    <div class="action-card" onclick="window.location.href='index.php?page=universal&gate=razorpay'"><div class="action-icon"><i class="fas fa-rupee-sign"></i></div><div class="action-title">Razorpay</div><div class="action-desc">Auto checker</div></div>
                 </div>
                 
                 <div class="two-col">
                     <div class="card">
-                        <div class="card-header"><div class="card-title"><i class="fas fa-user-circle"></i> Account Overview</div><span class="plan-badge plan-<?php echo $user['plan'] ?? 'basic'; ?>"><?php echo ucfirst($user['plan'] ?? 'Basic'); ?></span></div>
+                        <div class="card-header"><div class="card-title"><i class="fas fa-user-circle"></i> Account Overview</div><span class="plan-badge plan-<?php echo $userPlan; ?>"><?php echo ucfirst($userPlan); ?></span></div>
                         <div class="info-row"><span class="info-label">Username</span><span class="info-value"><?php echo htmlspecialchars($user['name']); ?></span></div>
                         <div class="info-row"><span class="info-label">Display Name</span><span class="info-value"><?php echo htmlspecialchars($user['display_name'] ?? $user['name']); ?></span></div>
                         <div class="info-row"><span class="info-label">API Key</span><span class="info-value"><?php echo isset($user['api_key']) ? '••••••••••••' : '-'; ?><?php if (isset($user['api_key'])): ?><button class="copy-btn" onclick="copyToClipboard('<?php echo $user['api_key']; ?>')"><i class="fas fa-copy"></i></button><?php endif; ?></span></div>
                         <div class="info-row"><span class="info-label">Member Since</span><span class="info-value"><?php echo isset($user['created_at']) ? date('M d, Y', strtotime($user['created_at'])) : '-'; ?></span></div>
-                        <div class="mt-1"><button class="btn btn-outline" onclick="window.location.href='adminaccess_panel.php'">Manage Account</button></div>
+                        <div class="mt-1"><button class="btn btn-outline" onclick="window.location.href='profile.php'">Manage Account</button></div>
                     </div>
                     <div class="card">
                         <div class="card-header"><div class="card-title"><i class="fas fa-coins"></i> Credit Balance</div></div>
@@ -385,46 +256,22 @@ $topPerformers = array_slice($leaderboard, 0, 5);
                 </div>
             <?php elseif ($page === 'topup'): ?>
                 <script>window.location.href = 'topup.php';</script>
-            <?php elseif ($page === 'stripe-auth'): ?>
-                <?php include 'pages/checker/stripe-auth.php'; ?>
-            <?php elseif ($page === 'razorpay'): ?>
-                <?php include 'pages/checker/razorpay.php'; ?>
-            <?php elseif ($page === 'shopify'): ?>
-                <?php include 'pages/checker/shopify.php'; ?>
-            <?php elseif ($page === 'auth'): ?>
-                <?php include 'pages/checker/auth.php'; ?>
-            <?php elseif ($page === 'charge'): ?>
-                <?php include 'pages/checker/charge.php'; ?>
-            <?php elseif ($page === 'auth-charge'): ?>
-                <?php include 'pages/checker/auth-charge.php'; ?>
-            <?php elseif ($page === 'stripe-checkout'): ?>
-                <?php include 'pages/checker/stripe-checkout.php'; ?>
-            <?php elseif ($page === 'stripe-invoice'): ?>
-                <?php include 'pages/checker/stripe-invoice.php'; ?>
-            <?php elseif ($page === 'stripe-inbuilt'): ?>
-                <?php include 'pages/checker/stripe-inbuilt.php'; ?>
-            <?php elseif ($page === 'key-stripe'): ?>
-                <?php include 'pages/checker/key-stripe.php'; ?>
-            <?php elseif ($page === 'key-paypal'): ?>
-                <?php include 'pages/checker/key-paypal.php'; ?>
-            <?php elseif ($page === 'address-gen'): ?>
-                <?php include 'pages/tools/address-gen.php'; ?>
-            <?php elseif ($page === 'bin-lookup'): ?>
-                <?php include 'pages/tools/bin-lookup.php'; ?>
-            <?php elseif ($page === 'cc-cleaner'): ?>
-                <?php include 'pages/tools/cc-cleaner.php'; ?>
-            <?php elseif ($page === 'cc-generator'): ?>
-                <?php include 'pages/tools/cc-generator.php'; ?>
-            <?php elseif ($page === 'proxy-checker'): ?>
-                <?php include 'pages/tools/proxy-checker.php'; ?>
-            <?php elseif ($page === 'vbv-checker'): ?>
-                <?php include 'pages/tools/vbv-checker.php'; ?>
-            <?php elseif ($page === 'proxies'): ?>
-                <?php include 'pages/preferences/proxies.php'; ?>
-            <?php elseif ($page === 'assets'): ?>
-                <?php include 'pages/preferences/assets.php'; ?>
+            <?php elseif ($page === 'universal'): ?>
+                <?php include 'pages/checker/universal.php'; ?>
             <?php else: ?>
-                <div class="card" style="text-align:center; padding:2rem;"><i class="fas fa-code" style="font-size:2rem; color:var(--primary); margin-bottom:0.5rem;"></i><h3><?php echo ucfirst(str_replace('-', ' ', $page)); ?></h3><p class="text-muted">Coming soon</p><button class="btn btn-outline" style="width:auto; margin-top:0.5rem;" onclick="window.location.href='index.php?page=home'">Return to Dashboard</button></div>
+                <?php
+                $legacyFile = "pages/checker/{$page}.php";
+                if (file_exists($legacyFile)) {
+                    include $legacyFile;
+                } else {
+                ?>
+                <div class="card" style="text-align:center; padding:2rem;">
+                    <i class="fas fa-code" style="font-size:2rem; color:var(--primary); margin-bottom:0.5rem;"></i>
+                    <h3><?php echo ucfirst(str_replace('-', ' ', $page)); ?></h3>
+                    <p class="text-muted">Coming soon</p>
+                    <button class="btn btn-outline" style="width:auto; margin-top:0.5rem;" onclick="window.location.href='index.php?page=home'">Return to Dashboard</button>
+                </div>
+                <?php } ?>
             <?php endif; ?>
         </div>
     </main>
@@ -443,7 +290,7 @@ $topPerformers = array_slice($leaderboard, 0, 5);
         let particles = [];
         function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
         class Particle { constructor() { this.x = Math.random() * canvas.width; this.y = Math.random() * canvas.height; this.size = Math.random() * 2 + 0.5; this.speedX = (Math.random() - 0.5) * 0.4; this.speedY = (Math.random() - 0.5) * 0.4; this.opacity = Math.random() * 0.4 + 0.2; this.color = `rgba(139, 92, 246, ${this.opacity})`; } update() { this.x += this.speedX; this.y += this.speedY; if (this.x < 0) this.x = canvas.width; if (this.x > canvas.width) this.x = 0; if (this.y < 0) this.y = canvas.height; if (this.y > canvas.height) this.y = 0; } draw() { ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fillStyle = this.color; ctx.fill(); } }
-        function initParticles() { particles = []; for (let i = 0; i < 50; i++) particles.push(new Particle()); }
+        function initParticles() { particles = []; for (let i = 0; i < 30; i++) particles.push(new Particle()); }
         function animateParticles() { ctx.clearRect(0, 0, canvas.width, canvas.height); for (let p of particles) { p.update(); p.draw(); } requestAnimationFrame(animateParticles); }
         window.addEventListener('resize', () => { resizeCanvas(); initParticles(); });
         resizeCanvas(); initParticles(); animateParticles();
@@ -454,12 +301,6 @@ $topPerformers = array_slice($leaderboard, 0, 5);
         const main = document.getElementById('main');
         if (menuBtn) menuBtn.addEventListener('click', () => { sidebar.classList.toggle('open'); main.classList.toggle('sidebar-open'); });
         document.addEventListener('click', (e) => { if (window.innerWidth <= 768 && sidebar && !sidebar.contains(e.target) && menuBtn && !menuBtn.contains(e.target)) { sidebar.classList.remove('open'); main.classList.remove('sidebar-open'); } });
-        
-        // User dropdown
-        const userMenu = document.getElementById('userMenu');
-        const userDropdown = document.getElementById('userDropdown');
-        if (userMenu) userMenu.addEventListener('click', (e) => { e.stopPropagation(); userDropdown.classList.toggle('show'); });
-        document.addEventListener('click', () => { if (userDropdown) userDropdown.classList.remove('show'); });
         
         // Theme toggle
         const themeBtn = document.getElementById('themeBtn');
@@ -475,23 +316,20 @@ $topPerformers = array_slice($leaderboard, 0, 5);
         if (closeBannerBtn) closeBannerBtn.addEventListener('click', (e) => { e.stopPropagation(); if (banner) banner.style.display = 'none'; localStorage.setItem('tgBannerDismissed', 'true'); });
         if (banner) banner.addEventListener('click', (e) => { if (e.target !== closeBannerBtn && !closeBannerBtn.contains(e.target)) window.open('https://t.me/approvedchecker', '_blank'); });
         
-        // Utility functions
         function copyToClipboard(text) { navigator.clipboard.writeText(text); Swal.fire({ toast: true, icon: 'success', title: 'Copied!', showConfirmButton: false, timer: 1500 }); }
-        function toggleGroup(groupId) { 
-            const content = document.getElementById('group-' + groupId);
-            const arrow = document.getElementById('arrow-' + groupId);
-            if (content) {
-                if (content.style.display === 'none' || content.style.display === '') {
-                    content.style.display = 'block';
-                    if (arrow) arrow.classList.add('open');
-                } else {
-                    content.style.display = 'none';
-                    if (arrow) arrow.classList.remove('open');
-                }
-            }
+        
+        // User dropdown
+        const userMenu = document.getElementById('userMenu');
+        const userDropdown = document.getElementById('userDropdown');
+        if (userMenu) {
+            userMenu.addEventListener('click', (e) => {
+                e.stopPropagation();
+                userDropdown.classList.toggle('show');
+            });
         }
-        // Initialize all groups closed
-        ['auto-checkers', 'checkers', 'hitters', 'key-based', 'tools', 'preferences'].forEach(g => { const c = document.getElementById('group-' + g); if (c) c.style.display = 'none'; });
+        document.addEventListener('click', () => {
+            if (userDropdown) userDropdown.classList.remove('show');
+        });
     </script>
 </body>
 </html>

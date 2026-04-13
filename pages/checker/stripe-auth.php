@@ -12,18 +12,32 @@ $credits = getUserCredits();
 $isAdmin = isAdmin();
 $userPlan = $user['plan'] ?? 'basic';
 
-// Check gate access based on user plan
+// Get Stripe gate from database
 $gates = loadGates();
 $stripeGate = $gates['stripe_auth'] ?? null;
 $requiredPlan = $stripeGate['required_plan'] ?? 'basic';
 $planPriority = ['basic' => 1, 'premium' => 2, 'gold' => 3, 'platinum' => 4, 'lifetime' => 5];
 $canAccess = $isAdmin || ($planPriority[$userPlan] >= $planPriority[$requiredPlan]);
+$creditCost = $stripeGate['credit_cost'] ?? 1;
+
+// Check if Telegram hits are enabled
+$settings = loadSettings();
+$telegramHitsEnabled = ($settings['telegram_hits_enabled'] ?? 'false') === 'true';
+
+// Default WooCommerce Stripe sites (Auto Mode)
+$defaultSites = [
+    'https://peeteescollection.com',
+    'https://chicvibe.shop',
+    'https://luxuryavenue.shop',
+    'https://fashionhub.store',
+    'https://elitegoodies.shop'
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo $pageTitle; ?> | APPROVED CHECKER</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
@@ -33,206 +47,276 @@ $canAccess = $isAdmin || ($planPriority[$userPlan] >= $planPriority[$requiredPla
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root { --bg: #0a0a0f; --card: #111114; --border: #1e1e24; --text: #ffffff; --text-muted: #6b6b76; --primary: #8b5cf6; --success: #10b981; --danger: #ef4444; --warning: #f59e0b; --info: #3b82f6; }
         [data-theme="light"] { --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0; --text: #0f172a; --text-muted: #64748b; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-        
-        .navbar { position: fixed; top: 0; left: 0; right: 0; height: 55px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 1rem; z-index: 100; }
-        .menu-btn { background: none; border: none; color: var(--text); font-size: 1rem; cursor: pointer; display: none; }
-        .logo { display: flex; align-items: center; gap: 0.5rem; }
-        .logo-icon { width: 30px; height: 30px; background: linear-gradient(135deg, var(--primary), #06b6d4); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
-        .logo-icon i { color: white; font-size: 0.9rem; }
-        .logo-text span:first-child { font-weight: 700; font-size: 0.85rem; background: linear-gradient(135deg, var(--primary), #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .logo-text span:last-child { font-size: 0.6rem; color: var(--text-muted); display: block; }
-        .user-menu { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.2rem 0.6rem; border-radius: 2rem; background: var(--bg); border: 1px solid var(--border); }
-        .user-avatar { width: 28px; height: 28px; background: linear-gradient(135deg, var(--primary), #7c3aed); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.7rem; color: white; }
-        .theme-btn { background: none; border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.3rem 0.5rem; cursor: pointer; color: var(--text-muted); }
-        
-        .sidebar { position: fixed; left: 0; top: 55px; bottom: 0; width: 260px; background: var(--card); border-right: 1px solid var(--border); transform: translateX(-100%); transition: transform 0.2s; z-index: 99; overflow-y: auto; }
-        .sidebar.open { transform: translateX(0); }
-        .sidebar-content { padding: 1rem; }
-        .sidebar-user { display: flex; align-items: center; gap: 0.7rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
-        .sidebar-avatar { width: 45px; height: 45px; background: linear-gradient(135deg, var(--primary), #7c3aed); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; color: white; }
-        .nav-item { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.7rem; border-radius: 0.5rem; color: var(--text-muted); text-decoration: none; margin-bottom: 0.2rem; }
-        .nav-item:hover { background: rgba(139,92,246,0.1); color: var(--primary); }
-        .nav-divider { font-size: 0.6rem; color: var(--text-muted); padding: 0.6rem 0.7rem 0.3rem; text-transform: uppercase; }
-        .logout-item { margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.7rem; color: var(--danger); }
-        
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; }
         .main { margin-left: 0; margin-top: 55px; padding: 1.2rem; transition: margin-left 0.2s; }
-        .main.sidebar-open { margin-left: 260px; }
-        @media (max-width: 768px) { .menu-btn { display: block; } .main.sidebar-open { margin-left: 0; } }
+        .main.sidebar-open { margin-left: 280px; }
+        @media (max-width: 768px) { .main.sidebar-open { margin-left: 0; } }
         .container { max-width: 1400px; margin: 0 auto; }
         
+        .gate-loader {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(10, 10, 15, 0.95);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            backdrop-filter: blur(5px);
+            transition: opacity 0.3s;
+        }
+        .gate-loader.hide { opacity: 0; pointer-events: none; }
+        .loader-spinner { width: 50px; height: 50px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loader-text { margin-top: 1rem; color: var(--primary); font-size: 0.8rem; font-weight: 500; }
+        .loader-progress { width: 200px; height: 2px; background: var(--border); border-radius: 2px; margin-top: 1rem; overflow: hidden; }
+        .loader-progress-bar { width: 0%; height: 100%; background: linear-gradient(90deg, var(--primary), #06b6d4); transition: width 0.3s; }
+        
+        .features-panel { background: var(--card); border: 1px solid var(--border); border-radius: 0.8rem; padding: 1rem; margin-bottom: 1rem; }
+        .features-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.8rem; }
+        .feature-card { background: var(--bg); border: 1px solid var(--border); border-radius: 0.6rem; padding: 0.8rem; text-align: center; cursor: pointer; transition: all 0.2s; }
+        .feature-card:hover { transform: translateY(-2px); border-color: var(--primary); background: rgba(139,92,246,0.05); }
+        .feature-icon { font-size: 1.2rem; margin-bottom: 0.3rem; color: var(--primary); }
+        .feature-title { font-size: 0.7rem; font-weight: 600; }
+        .feature-desc { font-size: 0.55rem; color: var(--text-muted); margin-top: 0.2rem; }
+        
+        .batch-section { background: var(--card); border: 1px solid var(--border); border-radius: 0.8rem; padding: 1rem; margin-bottom: 1rem; display: none; }
+        .batch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem; flex-wrap: wrap; gap: 0.5rem; }
         .page-header { margin-bottom: 1rem; }
         .page-title { font-size: 1.6rem; font-weight: 700; background: linear-gradient(135deg, var(--primary), #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .page-subtitle { color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem; }
         .credit-info { font-size: 0.7rem; color: var(--text-muted); text-align: right; margin-bottom: 1rem; }
-        .plan-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 12px; font-size: 0.6rem; margin-left: 0.5rem; }
-        .plan-basic { background: rgba(107,114,128,0.2); color: #9ca3af; }
-        .plan-premium { background: rgba(245,158,11,0.2); color: #f59e0b; }
-        .plan-gold { background: rgba(251,191,36,0.2); color: #fbbf24; }
-        .plan-platinum { background: rgba(168,85,247,0.2); color: #a855f7; }
-        .plan-lifetime { background: rgba(236,72,153,0.2); color: #ec4899; }
-        
-        .stats-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
+        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem; margin-bottom: 1rem; display: none; }
         .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem; text-align: center; }
-        .stat-card.approved { border-left: 3px solid var(--success); }
-        .stat-card.declined { border-left: 3px solid var(--danger); }
-        .stat-card.threeds { border-left: 3px solid var(--warning); }
-        .stat-card.invalid { border-left: 3px solid var(--info); }
-        .stat-card.expired { border-left: 3px solid #64748b; }
         .stat-value { font-size: 1.1rem; font-weight: 700; }
-        .stat-label { font-size: 0.5rem; text-transform: uppercase; color: var(--text-muted); }
-        
-        .pool-selector { display: flex; gap: 1rem; margin-bottom: 1rem; }
-        .pool-option { flex: 1; padding: 0.5rem; border: 1px solid var(--border); border-radius: 0.5rem; cursor: pointer; text-align: center; }
-        .pool-option.selected { border-color: var(--primary); background: rgba(139,92,246,0.1); }
-        .pool-name { font-weight: 600; font-size: 0.75rem; }
-        .pool-desc { font-size: 0.55rem; color: var(--text-muted); }
-        
-        .site-selector { margin-bottom: 1rem; }
-        .site-options { display: flex; gap: 1rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
-        .site-option { display: flex; align-items: center; gap: 0.3rem; cursor: pointer; font-size: 0.7rem; }
-        .site-input { margin-top: 0.5rem; display: none; }
-        .site-input.show { display: block; }
-        .site-input input { width: 100%; padding: 0.4rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text); font-size: 0.7rem; }
-        
-        .proxy-section { margin-bottom: 1rem; }
-        .proxy-options { display: flex; gap: 1rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
-        .proxy-option { display: flex; align-items: center; gap: 0.3rem; cursor: pointer; font-size: 0.7rem; }
-        .proxy-input { margin-top: 0.5rem; display: none; }
-        .proxy-input.show { display: block; }
-        .proxy-input input { width: 100%; padding: 0.4rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text); font-size: 0.7rem; font-family: monospace; }
-        
+        .stat-label { font-size: 0.55rem; text-transform: uppercase; color: var(--text-muted); }
         .checker-card { background: var(--card); border: 1px solid var(--border); border-radius: 0.8rem; padding: 1rem; margin-bottom: 1rem; }
         textarea { width: 100%; min-height: 120px; background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.6rem; color: var(--text); font-family: monospace; font-size: 0.75rem; resize: vertical; }
         .action-buttons { display: flex; gap: 0.5rem; margin-top: 0.8rem; flex-wrap: wrap; }
-        .btn { padding: 0.4rem 0.8rem; border-radius: 0.4rem; font-weight: 500; font-size: 0.65rem; cursor: pointer; border: none; transition: all 0.2s; }
+        .btn { padding: 0.4rem 0.8rem; border-radius: 0.4rem; font-weight: 500; font-size: 0.65rem; cursor: pointer; border: none; transition: all 0.2s; display: inline-flex; align-items: center; gap: 0.3rem; }
         .btn-primary { background: linear-gradient(135deg, var(--primary), #7c3aed); color: white; }
-        .btn-secondary { background: var(--bg); border: 1px solid var(--border); color: var(--text); }
         .btn-danger { background: var(--danger); color: white; }
+        .btn-secondary { background: var(--bg); border: 1px solid var(--border); color: var(--text); }
+        .btn-success { background: var(--success); color: white; }
+        .btn-warning { background: var(--warning); color: white; }
         .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.6rem; }
-        
-        .results-section { background: var(--card); border: 1px solid var(--border); border-radius: 0.8rem; padding: 1rem; margin-top: 1rem; }
+        .results-section { background: var(--card); border: 1px solid var(--border); border-radius: 0.8rem; padding: 1rem; margin-top: 1rem; display: none; }
         .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem; flex-wrap: wrap; gap: 0.5rem; }
-        .download-buttons { display: flex; gap: 0.3rem; flex-wrap: wrap; }
         .filter-buttons { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-bottom: 0.8rem; }
         .filter-btn { padding: 0.2rem 0.5rem; border-radius: 0.3rem; font-size: 0.55rem; cursor: pointer; background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); }
         .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
-        
-        .result-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; border-bottom: 1px solid var(--border); }
-        .result-icon { width: 24px; height: 24px; border-radius: 0.3rem; display: flex; align-items: center; justify-content: center; font-size: 0.55rem; }
-        .result-icon.approved { background: rgba(16,185,129,0.15); color: var(--success); }
-        .result-icon.charged { background: rgba(16,185,129,0.15); color: var(--success); }
-        .result-icon.threeds { background: rgba(245,158,11,0.15); color: var(--warning); }
-        .result-icon.declined { background: rgba(239,68,68,0.15); color: var(--danger); }
-        .result-icon.invalid_cvv { background: rgba(59,130,246,0.15); color: var(--info); }
-        .result-icon.expired { background: rgba(100,116,139,0.15); color: #64748b; }
-        .result-content { flex: 1; }
-        .result-card { font-size: 0.65rem; font-weight: 500; font-family: monospace; }
-        .result-status { font-size: 0.55rem; color: var(--text-muted); }
-        .bin-info { font-size: 0.5rem; color: var(--text-muted); margin-top: 0.15rem; }
-        .progress-bar { margin-top: 0.8rem; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; display: none; }
+        .result-item { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.6rem; border-bottom: 1px solid var(--border); margin-bottom: 0.3rem; background: var(--bg); border-radius: 0.5rem; position: relative; }
+        .result-item.approved { border-left: 3px solid var(--success); }
+        .result-item.declined { border-left: 3px solid var(--danger); }
+        .result-item.threeds { border-left: 3px solid var(--warning); }
+        .result-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.3rem; }
+        .result-card { font-family: monospace; font-size: 0.7rem; font-weight: 500; word-break: break-all; }
+        .result-status { font-size: 0.6rem; padding: 0.15rem 0.4rem; border-radius: 0.3rem; }
+        .result-status.approved { background: rgba(16,185,129,0.2); color: var(--success); }
+        .result-status.declined { background: rgba(239,68,68,0.2); color: var(--danger); }
+        .result-status.threeds { background: rgba(245,158,11,0.2); color: var(--warning); }
+        .result-details { font-size: 0.55rem; color: var(--text-muted); margin-top: 0.2rem; }
+        .result-actions { display: flex; gap: 0.3rem; margin-top: 0.3rem; flex-wrap: wrap; }
+        .result-action-btn { background: none; border: 1px solid var(--border); border-radius: 0.3rem; padding: 0.15rem 0.4rem; font-size: 0.55rem; cursor: pointer; color: var(--text-muted); transition: all 0.2s; }
+        .result-action-btn:hover { background: var(--primary); border-color: var(--primary); color: white; }
+        .progress-bar { margin-top: 1rem; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; display: none; }
         .progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), #06b6d4); width: 0%; transition: width 0.3s; }
         .status-text { font-size: 0.6rem; color: var(--text-muted); margin-top: 0.5rem; text-align: center; display: none; }
-        .gate-access-warning { background: rgba(245,158,11,0.1); border: 1px solid var(--warning); border-radius: 0.5rem; padding: 0.5rem; margin-bottom: 1rem; font-size: 0.7rem; color: var(--warning); text-align: center; }
-        @media (max-width: 768px) { .stats-grid { grid-template-columns: repeat(3, 1fr); } .sidebar { width: 280px; } }
+        .credit-cost-badge { background: rgba(139,92,246,0.2); padding: 0.2rem 0.5rem; border-radius: 0.5rem; font-size: 0.65rem; }
+        .site-selector, .proxy-section { margin-bottom: 1rem; }
+        .site-mode-buttons, .proxy-mode-buttons { display: flex; gap: 1rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+        .mode-btn { display: flex; align-items: center; gap: 0.3rem; padding: 0.3rem 0.8rem; border-radius: 0.5rem; background: var(--bg); border: 1px solid var(--border); cursor: pointer; font-size: 0.7rem; transition: all 0.2s; }
+        .mode-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+        .mode-btn i { font-size: 0.7rem; }
+        .sites-container, .proxies-container { margin-top: 0.5rem; display: none; }
+        .sites-container.show, .proxies-container.show { display: block; }
+        .site-item, .proxy-item { background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.3rem 0.6rem; margin-bottom: 0.3rem; font-size: 0.65rem; display: flex; justify-content: space-between; align-items: center; }
+        .site-url, .proxy-string { font-family: monospace; word-break: break-all; flex: 1; }
+        .delete-site, .delete-proxy { background: none; border: none; color: var(--danger); cursor: pointer; padding: 0.2rem; }
+        .add-site-form, .add-proxy-form { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+        .add-site-form input, .add-proxy-form input { flex: 1; padding: 0.3rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.3rem; color: var(--text); font-size: 0.65rem; }
+        .batch-actions { display: flex; gap: 0.5rem; margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--border); flex-wrap: wrap; }
+        @media (max-width: 768px) { .stats-grid { grid-template-columns: repeat(3, 1fr); } .features-grid { grid-template-columns: repeat(2, 1fr); } }
+        .form-control { width: 100%; padding: 0.4rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text); font-size: 0.7rem; }
     </style>
 </head>
 <body data-theme="dark">
-    <?php include __DIR__ . "/../../includes/header.php"; ?>
-    <?php include __DIR__ . "/../../includes/sidebar.php"; ?>
+    <div class="gate-loader" id="gateLoader" style="display: none;">
+        <div class="loader-spinner"></div>
+        <div class="loader-text" id="loaderText">Loading Stripe Auth Checker...</div>
+        <div class="loader-progress"><div class="loader-progress-bar" id="loaderProgress"></div></div>
+    </div>
 
+    <?php include $_SERVER['DOCUMENT_ROOT'] . "/includes/header.php"; ?>
+    <?php include $_SERVER['DOCUMENT_ROOT'] . "/includes/sidebar.php"; ?>
+    
     <main class="main" id="main">
         <div class="container">
             <div class="page-header">
-                <h1 class="page-title"><?php echo $pageTitle; ?></h1>
-                <p class="page-subtitle">Automated CC auth checking with CVV validation & Telegram hits</p>
+                <h1 class="page-title"><i class="fab fa-stripe"></i> <?php echo $pageTitle; ?></h1>
+                <p class="page-subtitle">Authorize cards by adding as payment method (No charge) | Auto & Self modes</p>
             </div>
-            
             <div class="credit-info">
                 <i class="fas fa-coins"></i> Credits: <span id="creditAmount"><?php echo $isAdmin ? '∞' : number_format($credits); ?></span>
-                <span class="plan-badge plan-<?php echo $userPlan; ?>"><?php echo ucfirst($userPlan); ?> Plan</span>
-                <span style="margin-left: 1rem;"><i class="fas fa-tachometer-alt"></i> 1 credit/check</span>
-                <span style="margin-left: 1rem;"><i class="fas fa-shield-alt"></i> Gate requires: <strong><?php echo ucfirst($requiredPlan); ?></strong></span>
+                <span class="credit-cost-badge"><i class="fas fa-tachometer-alt"></i> Cost: <?php echo $creditCost; ?> credit(s) per check</span>
+                <?php if ($telegramHitsEnabled): ?>
+                <span class="credit-cost-badge" style="background: rgba(34,197,94,0.2);"><i class="fab fa-telegram"></i> Hits to TG</span>
+                <?php endif; ?>
             </div>
             
-            <?php if (!$canAccess): ?>
-            <div class="gate-access-warning">
-                <i class="fas fa-exclamation-triangle"></i> This gate requires <?php echo ucfirst($requiredPlan); ?> plan. <a href="/topup.php" style="color: var(--primary);">Upgrade Now</a>
+            <div class="features-panel">
+                <div class="features-grid">
+                    <div class="feature-card" onclick="showBatchChecker()">
+                        <div class="feature-icon"><i class="fas fa-layer-group"></i></div>
+                        <div class="feature-title">Batch Checker</div>
+                        <div class="feature-desc">Multi-thread processing</div>
+                    </div>
+                    <div class="feature-card" onclick="showSiteManager()">
+                        <div class="feature-icon"><i class="fas fa-store"></i></div>
+                        <div class="feature-title">Site Manager</div>
+                        <div class="feature-desc">Manage Stripe sites</div>
+                    </div>
+                    <div class="feature-card" onclick="showProxyManager()">
+                        <div class="feature-icon"><i class="fas fa-globe"></i></div>
+                        <div class="feature-title">Proxy Manager</div>
+                        <div class="feature-desc">Manage proxies</div>
+                    </div>
+                    <div class="feature-card" onclick="clearAllResults()">
+                        <div class="feature-icon"><i class="fas fa-trash-alt"></i></div>
+                        <div class="feature-title">Clear All</div>
+                        <div class="feature-desc">Reset everything</div>
+                    </div>
+                </div>
             </div>
-            <?php endif; ?>
             
-            <div class="stats-grid" id="statsGrid" style="display: none;">
-                <div class="stat-card approved"><div class="stat-value" id="statApproved">0</div><div class="stat-label">Approved</div></div>
-                <div class="stat-card declined"><div class="stat-value" id="statDeclined">0</div><div class="stat-label">Declined</div></div>
-                <div class="stat-card threeds"><div class="stat-value" id="stat3DS">0</div><div class="stat-label">3DS</div></div>
-                <div class="stat-card invalid"><div class="stat-value" id="statInvalidCVV">0</div><div class="stat-label">Invalid CVV</div></div>
-                <div class="stat-card expired"><div class="stat-value" id="statExpired">0</div><div class="stat-label">Expired</div></div>
-                <div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total</div></div>
+            <div class="batch-section" id="batchPanel">
+                <div class="batch-header">
+                    <div><i class="fas fa-tachometer-alt"></i> <strong>Batch Checker</strong> <span id="batchStatus" style="font-size:0.6rem;"></span></div>
+                    <div><button class="btn btn-secondary btn-sm" onclick="closeBatchPanel()"><i class="fas fa-times"></i> Close</button></div>
+                </div>
+                <div class="stats-grid" style="margin-bottom:0.5rem; display:grid;">
+                    <div class="stat-card"><div class="stat-value" id="batchApproved">0</div><div class="stat-label">Approved</div></div>
+                    <div class="stat-card"><div class="stat-value" id="batchDeclined">0</div><div class="stat-label">Declined</div></div>
+                    <div class="stat-card"><div class="stat-value" id="batchProcessed">0</div><div class="stat-label">Processed</div></div>
+                </div>
+                <div class="progress-bar" id="batchProgressBar" style="display:block;"><div class="progress-fill" id="batchProgressFill" style="width:0%;"></div></div>
+            </div>
+            
+            <div class="batch-section" id="sitePanel" style="display:none;">
+                <div class="batch-header">
+                    <div><i class="fas fa-store"></i> <strong>Site Manager (Self Mode Stripe Sites)</strong></div>
+                    <div><button class="btn btn-secondary btn-sm" onclick="closeSitePanel()"><i class="fas fa-times"></i> Close</button></div>
+                </div>
+                <div id="customSitesList"></div>
+                <div class="add-site-form">
+                    <input type="text" id="newSiteUrl" placeholder="https://example.com (WooCommerce Stripe site)">
+                    <button class="btn btn-primary btn-sm" onclick="addCustomSite()"><i class="fas fa-plus"></i> Add Site</button>
+                </div>
+                <div style="margin-top:0.5rem;">
+                    <button class="btn btn-secondary btn-sm" onclick="uploadSitesFile()"><i class="fas fa-upload"></i> Upload Sites (.txt)</button>
+                    <input type="file" id="sitesFileInput" style="display:none;" accept=".txt">
+                </div>
+            </div>
+            
+            <div class="batch-section" id="proxyPanel" style="display:none;">
+                <div class="batch-header">
+                    <div><i class="fas fa-globe"></i> <strong>Proxy Manager</strong></div>
+                    <div><button class="btn btn-secondary btn-sm" onclick="closeProxyPanel()"><i class="fas fa-times"></i> Close</button></div>
+                </div>
+                <div id="proxyListContainer"></div>
+                <div class="add-proxy-form">
+                    <input type="text" id="newProxy" placeholder="ip:port:user:pass">
+                    <button class="btn btn-primary btn-sm" onclick="addProxy()"><i class="fas fa-plus"></i> Add Proxy</button>
+                </div>
+                <div style="margin-top:0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button class="btn btn-secondary btn-sm" onclick="uploadProxiesFile()"><i class="fas fa-upload"></i> Upload Proxies (.txt)</button>
+                    <button class="btn btn-warning btn-sm" onclick="testAllProxies()"><i class="fas fa-vial"></i> Test All</button>
+                    <button class="btn btn-success btn-sm" onclick="getRandomProxy()"><i class="fas fa-random"></i> Random Proxy</button>
+                </div>
+                <input type="file" id="proxiesFileInput" style="display:none;" accept=".txt">
+                <div id="proxyTestResult" style="margin-top:0.5rem; font-size:0.6rem;"></div>
             </div>
             
             <div class="checker-card">
-                <div class="pool-selector">
-                    <div class="pool-option selected" data-pool="stap" onclick="selectPool('stap')"><div class="pool-name">STAP</div><div class="pool-desc">Standard Stripe Auth</div></div>
-                    <div class="pool-option" data-pool="strat" onclick="selectPool('strat')"><div class="pool-name">STRAT</div><div class="pool-desc">Advanced Strategy</div></div>
-                </div>
-                <input type="hidden" id="selectedPool" value="stap">
-                
-                <div class="site-selector">
-                    <div class="site-options">
-                        <label class="site-option"><input type="radio" name="site_mode" value="default" checked onchange="toggleSiteInput()"> <i class="fas fa-globe"></i> Default Site</label>
-                        <label class="site-option"><input type="radio" name="site_mode" value="custom" onchange="toggleSiteInput()"> <i class="fas fa-pen"></i> Custom Site</label>
+                <!-- Mode Selection -->
+                <div style="margin-bottom: 1rem;">
+                    <div class="site-mode-buttons">
+                        <div class="mode-btn active" id="autoModeBtn" onclick="setMode('auto')">
+                            <i class="fas fa-robot"></i> Auto Mode (Built-in Stripe Sites)
+                        </div>
+                        <div class="mode-btn" id="selfModeBtn" onclick="setMode('self')">
+                            <i class="fas fa-user"></i> Self Mode (Your Stripe Sites)
+                        </div>
                     </div>
-                    <div class="site-input" id="customSiteInput">
-                        <input type="text" id="customSite" placeholder="https://example-stripe-store.com">
+                    <div id="autoSitesDisplay" style="font-size:0.65rem; color:var(--text-muted);">
+                        <i class="fas fa-globe"></i> Using built-in WooCommerce Stripe sites
+                    </div>
+                    <div id="selfSitesDisplay" style="display:none; font-size:0.65rem; color:var(--text-muted);">
+                        <i class="fas fa-store"></i> Using custom Stripe sites. <a href="#" onclick="showSiteManager(); return false;">Manage Sites</a>
                     </div>
                 </div>
                 
+                <!-- Proxy Selection -->
                 <div class="proxy-section">
-                    <div class="proxy-options">
-                        <label class="proxy-option"><input type="radio" name="proxy_mode" value="none" checked onchange="toggleProxyInput()"> <i class="fas fa-globe"></i> No Proxy</label>
-                        <label class="proxy-option"><input type="radio" name="proxy_mode" value="default" onchange="toggleProxyInput()"> <i class="fas fa-server"></i> Default Proxy</label>
-                        <label class="proxy-option"><input type="radio" name="proxy_mode" value="custom" onchange="toggleProxyInput()"> <i class="fas fa-pen"></i> Custom Proxy</label>
+                    <div class="proxy-mode-buttons">
+                        <div class="mode-btn active" id="noProxyBtn" onclick="setProxyMode('none')">
+                            <i class="fas fa-globe"></i> No Proxy
+                        </div>
+                        <div class="mode-btn" id="customProxyBtn" onclick="setProxyMode('custom')">
+                            <i class="fas fa-server"></i> Use Proxy
+                        </div>
+                        <div class="mode-btn" id="rotateProxyBtn" onclick="setProxyMode('rotate')">
+                            <i class="fas fa-random"></i> Rotate Proxies
+                        </div>
                     </div>
-                    <div class="proxy-input" id="customProxyInput">
-                        <input type="text" id="customProxy" placeholder="http://user:pass@ip:port or socks5://ip:port">
+                    <div id="proxyDisplay" style="font-size:0.65rem; color:var(--text-muted); margin-top:0.3rem;">
+                        <i class="fas fa-info-circle"></i> No proxy will be used
                     </div>
                 </div>
                 
-                <textarea id="cardsInput" placeholder="Enter card details (one per line):&#10;card|month|year|cvv&#10;4532123456789012|12|2025|123"></textarea>
-                
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                    <label><i class="fas fa-credit-card"></i> Cards (Format: card|month|year|cvv)</label>
+                    <div class="download-buttons">
+                        <button class="btn btn-secondary btn-sm" id="uploadBtn"><i class="fas fa-upload"></i> Upload .txt</button>
+                        <input type="file" id="fileInput" style="display: none;" accept=".txt">
+                    </div>
+                </div>
+                <textarea id="cardsInput" placeholder="4532123456789012|12|2025|123&#10;5509890034877216|06|2028|333"></textarea>
                 <div class="action-buttons">
-                    <button class="btn btn-primary" id="startBtn" <?php echo !$canAccess ? 'disabled' : ''; ?>><i class="fas fa-play"></i> Start Check</button>
+                    <button class="btn btn-primary" id="startBtn"><i class="fas fa-play"></i> Start Check</button>
                     <button class="btn btn-danger" id="stopBtn" disabled><i class="fas fa-stop"></i> Stop</button>
                     <button class="btn btn-secondary" id="clearBtn"><i class="fas fa-trash"></i> Clear</button>
+                    <button class="btn btn-warning" id="massCheckBtn"><i class="fas fa-rocket"></i> Mass Check</button>
                 </div>
-                
                 <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
-                <div class="status-text" id="statusText">Processing...</div>
+                <div class="status-text" id="statusText">Ready...</div>
             </div>
             
-            <div class="results-section" id="resultsSection" style="display: none;">
+            <div class="stats-grid" id="statsGrid" style="display: none;">
+                <div class="stat-card"><div class="stat-value" id="statApproved">0</div><div class="stat-label">Approved</div></div>
+                <div class="stat-card"><div class="stat-value" id="statDeclined">0</div><div class="stat-label">Declined</div></div>
+                <div class="stat-card"><div class="stat-value" id="stat3DS">0</div><div class="stat-label">3DS</div></div>
+                <div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total</div></div>
+            </div>
+            
+            <div class="results-section" id="resultsSection">
                 <div class="results-header">
-                    <div class="results-title"><i class="fas fa-list-check"></i> Results (<span id="resultsCount">0</span>)</div>
-                    <div class="download-buttons">
-                        <button class="btn btn-secondary btn-sm" onclick="downloadResults('all')"><i class="fas fa-download"></i> All</button>
-                        <button class="btn btn-secondary btn-sm" onclick="downloadResults('approved')"><i class="fas fa-check-circle"></i> Approved</button>
-                        <button class="btn btn-secondary btn-sm" onclick="downloadResults('declined')"><i class="fas fa-times-circle"></i> Declined</button>
-                        <button class="btn btn-secondary btn-sm" onclick="downloadResults('threeds')"><i class="fas fa-lock"></i> 3DS</button>
-                        <button class="btn btn-secondary btn-sm" onclick="downloadResults('invalid_cvv')"><i class="fas fa-key"></i> Invalid CVV</button>
-                        <button class="btn btn-secondary btn-sm" onclick="downloadResults('expired')"><i class="fas fa-calendar-times"></i> Expired</button>
+                    <div><i class="fas fa-list-check"></i> Results (<span id="resultsCount">0</span>)</div>
+                    <div class="batch-actions">
+                        <button class="btn btn-success btn-sm" id="copyAllApprovedBtn" disabled><i class="fas fa-copy"></i> Copy Approved</button>
+                        <button class="btn btn-primary btn-sm" id="downloadAllBtn" disabled><i class="fas fa-download"></i> Download All</button>
+                        <button class="btn btn-success btn-sm" id="downloadApprovedBtn" disabled><i class="fas fa-download"></i> DL Approved</button>
+                        <button class="btn btn-info btn-sm" id="exportJSONBtn" disabled><i class="fas fa-file-code"></i> Export JSON</button>
                     </div>
                 </div>
-                
                 <div class="filter-buttons">
                     <button class="filter-btn active" data-filter="all">All</button>
                     <button class="filter-btn" data-filter="approved">Approved</button>
-                    <button class="filter-btn" data-filter="charged">Charged</button>
-                    <button class="filter-btn" data-filter="threeds">3DS</button>
                     <button class="filter-btn" data-filter="declined">Declined</button>
-                    <button class="filter-btn" data-filter="invalid_cvv">Invalid CVV</button>
-                    <button class="filter-btn" data-filter="expired">Expired</button>
+                    <button class="filter-btn" data-filter="threeds">3DS</button>
                 </div>
-                
                 <div id="resultsList"></div>
             </div>
         </div>
@@ -241,204 +325,413 @@ $canAccess = $isAdmin || ($planPriority[$userPlan] >= $planPriority[$requiredPla
     <script>
         let isProcessing = false;
         let shouldStop = false;
-        let currentResults = [];
         let currentCredits = <?php echo $credits; ?>;
+        let creditCost = <?php echo $creditCost; ?>;
+        let isAdmin = <?php echo $isAdmin ? 'true' : 'false'; ?>;
+        let results = [];
+        let isMassChecking = false;
+        let currentMode = 'auto';
+        let proxyMode = 'none';
+        let currentProxy = '';
+        let customSites = [];
+        let proxies = [];
         
-        function selectPool(pool) {
-            document.querySelectorAll('.pool-option').forEach(opt => opt.classList.remove('selected'));
-            document.querySelector(`.pool-option[data-pool="${pool}"]`).classList.add('selected');
-            document.getElementById('selectedPool').value = pool;
+        const defaultSites = <?php echo json_encode($defaultSites); ?>;
+        
+        function showLoader(text, duration) {
+            const loader = document.getElementById('gateLoader');
+            loader.style.display = 'flex';
+            document.getElementById('loaderText').textContent = text || 'Loading...';
+            if (duration) setTimeout(() => hideLoader(), duration);
         }
         
-        function toggleSiteInput() {
-            const siteMode = document.querySelector('input[name="site_mode"]:checked').value;
-            const customInput = document.getElementById('customSiteInput');
-            customInput.classList.toggle('show', siteMode === 'custom');
+        function hideLoader() {
+            document.getElementById('gateLoader').style.display = 'none';
         }
         
-        function toggleProxyInput() {
-            const proxyMode = document.querySelector('input[name="proxy_mode"]:checked').value;
-            const customInput = document.getElementById('customProxyInput');
-            customInput.classList.toggle('show', proxyMode === 'custom');
+        document.addEventListener('DOMContentLoaded', function() {
+            showLoader('Loading Stripe Auth Checker...', 800);
+            loadCustomSites();
+            loadProxies();
+        });
+        
+        function setMode(mode) {
+            currentMode = mode;
+            document.getElementById('autoModeBtn').classList.toggle('active', mode === 'auto');
+            document.getElementById('selfModeBtn').classList.toggle('active', mode === 'self');
+            document.getElementById('autoSitesDisplay').style.display = mode === 'auto' ? 'block' : 'none';
+            document.getElementById('selfSitesDisplay').style.display = mode === 'self' ? 'block' : 'none';
+        }
+        
+        function setProxyMode(mode) {
+            proxyMode = mode;
+            document.getElementById('noProxyBtn').classList.toggle('active', mode === 'none');
+            document.getElementById('customProxyBtn').classList.toggle('active', mode === 'custom');
+            document.getElementById('rotateProxyBtn').classList.toggle('active', mode === 'rotate');
+        }
+        
+        function getSite() {
+            if (currentMode === 'auto') {
+                return defaultSites[Math.floor(Math.random() * defaultSites.length)];
+            } else {
+                return customSites.length > 0 ? customSites[Math.floor(Math.random() * customSites.length)] : defaultSites[0];
+            }
+        }
+        
+        function getProxy() {
+            if (proxyMode === 'none') return '';
+            if (proxyMode === 'custom') return currentProxy;
+            if (proxyMode === 'rotate' && proxies.length > 0) {
+                return proxies[Math.floor(Math.random() * proxies.length)];
+            }
+            return '';
+        }
+        
+        function loadCustomSites() {
+            const saved = localStorage.getItem('stripe_custom_sites');
+            if (saved) customSites = JSON.parse(saved);
+            renderCustomSites();
+        }
+        
+        function saveCustomSites() {
+            localStorage.setItem('stripe_custom_sites', JSON.stringify(customSites));
+            renderCustomSites();
+        }
+        
+        function renderCustomSites() {
+            const container = document.getElementById('customSitesList');
+            if (!container) return;
+            if (customSites.length === 0) {
+                container.innerHTML = '<div class="site-item"><div class="site-url">No custom sites added yet</div></div>';
+                return;
+            }
+            let html = '';
+            customSites.forEach((site, index) => {
+                html += `<div class="site-item"><div class="site-url">${escapeHtml(site)}</div><button class="delete-site" onclick="removeCustomSite(${index})"><i class="fas fa-trash"></i></button></div>`;
+            });
+            container.innerHTML = html;
+        }
+        
+        function addCustomSite() {
+            const url = document.getElementById('newSiteUrl').value.trim();
+            if (!url) return Swal.fire('Error', 'Please enter a site URL', 'error');
+            if (!url.startsWith('http')) return Swal.fire('Error', 'URL must start with http:// or https://', 'error');
+            customSites.push(url);
+            saveCustomSites();
+            document.getElementById('newSiteUrl').value = '';
+            Swal.fire('Added', 'Site added successfully', 'success');
+        }
+        
+        function removeCustomSite(index) {
+            customSites.splice(index, 1);
+            saveCustomSites();
+        }
+        
+        function uploadSitesFile() {
+            document.getElementById('sitesFileInput').click();
+        }
+        
+        function loadProxies() {
+            const saved = localStorage.getItem('stripe_proxies');
+            if (saved) proxies = JSON.parse(saved);
+            renderProxies();
+        }
+        
+        function saveProxies() {
+            localStorage.setItem('stripe_proxies', JSON.stringify(proxies));
+            renderProxies();
+        }
+        
+        function renderProxies() {
+            const container = document.getElementById('proxyListContainer');
+            if (!container) return;
+            if (proxies.length === 0) {
+                container.innerHTML = '<div class="proxy-item"><div class="proxy-string">No proxies added yet</div></div>';
+                return;
+            }
+            let html = '';
+            proxies.forEach((proxy, index) => {
+                html += `<div class="proxy-item"><div class="proxy-string">${escapeHtml(proxy)}</div><button class="delete-proxy" onclick="removeProxy(${index})"><i class="fas fa-trash"></i></button></div>`;
+            });
+            container.innerHTML = html;
+        }
+        
+        function addProxy() {
+            const proxy = document.getElementById('newProxy').value.trim();
+            if (!proxy) return Swal.fire('Error', 'Please enter a proxy', 'error');
+            proxies.push(proxy);
+            saveProxies();
+            document.getElementById('newProxy').value = '';
+            Swal.fire('Added', 'Proxy added successfully', 'success');
+        }
+        
+        function removeProxy(index) {
+            proxies.splice(index, 1);
+            saveProxies();
+        }
+        
+        function uploadProxiesFile() {
+            document.getElementById('proxiesFileInput').click();
+        }
+        
+        function testAllProxies() {
+            Swal.fire('Info', 'Proxy testing feature coming soon', 'info');
+        }
+        
+        function getRandomProxy() {
+            if (proxies.length === 0) return Swal.fire('No Proxies', 'Add some proxies first', 'warning');
+            currentProxy = proxies[Math.floor(Math.random() * proxies.length)];
+            setProxyMode('custom');
+            Swal.fire('Proxy Selected', currentProxy, 'success');
+        }
+        
+        function showBatchChecker() {
+            document.getElementById('batchPanel').style.display = 'block';
+            setTimeout(() => document.getElementById('batchPanel').scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+        
+        function closeBatchPanel() { document.getElementById('batchPanel').style.display = 'none'; }
+        
+        function showSiteManager() {
+            document.getElementById('sitePanel').style.display = 'block';
+            renderCustomSites();
+            setTimeout(() => document.getElementById('sitePanel').scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+        
+        function closeSitePanel() { document.getElementById('sitePanel').style.display = 'none'; }
+        
+        function showProxyManager() {
+            document.getElementById('proxyPanel').style.display = 'block';
+            renderProxies();
+            setTimeout(() => document.getElementById('proxyPanel').scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+        
+        function closeProxyPanel() { document.getElementById('proxyPanel').style.display = 'none'; }
+        
+        function clearAllResults() {
+            if (results.length === 0) return Swal.fire('No results', 'Nothing to clear', 'info');
+            Swal.fire({
+                title: 'Clear all results?',
+                text: `This will clear ${results.length} results`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Yes, clear all'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    results = [];
+                    document.getElementById('resultsList').innerHTML = '';
+                    document.getElementById('resultsSection').style.display = 'none';
+                    document.getElementById('statsGrid').style.display = 'none';
+                    updateStats();
+                    Swal.fire('Cleared!', 'All results cleared', 'success');
+                }
+            });
         }
         
         function updateStats() {
-            let approved = 0, declined = 0, threeds = 0, invalid = 0, expired = 0;
-            currentResults.forEach(r => {
-                if (r.status === 'approved' || r.status === 'charged') approved++;
+            let approved = 0, declined = 0, threeds = 0;
+            results.forEach(r => {
+                if (r.status === 'approved') approved++;
                 else if (r.status === 'threeds') threeds++;
-                else if (r.status === 'invalid_cvv') invalid++;
-                else if (r.status === 'expired') expired++;
                 else declined++;
             });
-            document.getElementById('statApproved').textContent = approved;
-            document.getElementById('statDeclined').textContent = declined;
-            document.getElementById('stat3DS').textContent = threeds;
-            document.getElementById('statInvalidCVV').textContent = invalid;
-            document.getElementById('statExpired').textContent = expired;
-            document.getElementById('statTotal').textContent = currentResults.length;
-            document.getElementById('resultsCount').textContent = currentResults.length;
+            document.getElementById('statApproved').innerText = approved;
+            document.getElementById('statDeclined').innerText = declined;
+            document.getElementById('stat3DS').innerText = threeds;
+            document.getElementById('statTotal').innerText = results.length;
+            document.getElementById('resultsCount').innerText = results.length;
             document.getElementById('statsGrid').style.display = 'grid';
+            
+            document.getElementById('copyAllApprovedBtn').disabled = approved === 0;
+            document.getElementById('downloadAllBtn').disabled = results.length === 0;
+            document.getElementById('downloadApprovedBtn').disabled = approved === 0;
+            document.getElementById('exportJSONBtn').disabled = results.length === 0;
         }
         
-        function addResult(card, status, message, binInfo) {
+        function copyApprovedCards() {
+            const approvedCards = results.filter(r => r.status === 'approved').map(r => r.card);
+            if (approvedCards.length === 0) return;
+            navigator.clipboard.writeText(approvedCards.join('\n'));
+            Swal.fire({ toast: true, icon: 'success', title: approvedCards.length + ' cards copied!', timer: 1500 });
+        }
+        
+        function downloadAllResults() {
+            if (results.length === 0) return;
+            let text = '';
+            results.forEach(r => { text += `Card: ${r.card}\nStatus: ${r.status}\nMessage: ${r.message}\nTime: ${r.time}\n---\n\n`; });
+            const blob = new Blob([text], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `stripe_auth_results_${new Date().toISOString().slice(0,19)}.txt`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+        
+        function downloadApprovedCards() {
+            const approvedCards = results.filter(r => r.status === 'approved').map(r => r.card);
+            if (approvedCards.length === 0) return;
+            const blob = new Blob([approvedCards.join('\n')], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `stripe_auth_approved_${new Date().toISOString().slice(0,19)}.txt`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+        
+        function exportJSON() {
+            if (results.length === 0) return;
+            const exportData = { timestamp: new Date().toISOString(), gateway: 'stripe_auth', mode: currentMode, total: results.length, results: results };
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `stripe_auth_results_${new Date().toISOString().slice(0,19)}.json`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+        
+        function copySingleCard(card) {
+            navigator.clipboard.writeText(card);
+            Swal.fire({ toast: true, icon: 'success', title: 'Card copied!', timer: 1500 });
+        }
+        
+        function addResult(card, status, message) {
             const statusClass = status;
-            const icon = status === 'approved' || status === 'charged' ? 'fa-check-circle' : 
-                        (status === 'threeds' ? 'fa-lock' : 
-                        (status === 'invalid_cvv' ? 'fa-key' : 
-                        (status === 'expired' ? 'fa-calendar-times' : 'fa-times-circle')));
+            let statusText = status.toUpperCase();
+            if (status === 'threeds') statusText = '3DS';
             
-            const resultHtml = `<div class="result-item" data-status="${status}">
-                <div class="result-icon ${status}"><i class="fas ${icon}"></i></div>
-                <div class="result-content">
-                    <div class="result-card">${escapeHtml(card)}</div>
-                    <div class="result-status">${status.toUpperCase().replace('_', ' ')} - ${escapeHtml(message)}</div>
-                    ${binInfo ? `<div class="bin-info">🏦 ${escapeHtml(binInfo.bank || 'Unknown')} 💳 ${escapeHtml(binInfo.brand || 'Unknown')} 🌍 ${escapeHtml(binInfo.country || 'XX')}</div>` : ''}
+            const html = `<div class="result-item ${statusClass}" data-status="${status}">
+                <div class="result-header">
+                    <div class="result-card"><code>${escapeHtml(card)}</code></div>
+                    <div class="result-status ${statusClass}">${statusText}</div>
+                </div>
+                <div class="result-details">${escapeHtml(message)}</div>
+                <div class="result-actions">
+                    <button class="result-action-btn" onclick="copySingleCard('${escapeHtml(card)}')"><i class="fas fa-copy"></i> Copy Card</button>
                 </div>
                 <div class="result-time">${new Date().toLocaleTimeString()}</div>
             </div>`;
-            
-            document.getElementById('resultsList').insertAdjacentHTML('afterbegin', resultHtml);
-            currentResults.unshift({card, status, message, binInfo});
+            document.getElementById('resultsList').insertAdjacentHTML('afterbegin', html);
+            results.unshift({ card, status, message, time: new Date().toLocaleTimeString() });
             updateStats();
             document.getElementById('resultsSection').style.display = 'block';
+            refreshCredits();
         }
         
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        function escapeHtml(str) {
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
         }
         
-        async function updateDashboardStats(card, status, message) {
+        function refreshCredits() {
+            fetch('/api/get_credits.php', { cache: 'no-store' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentCredits = data.credits;
+                        document.getElementById('creditAmount').innerText = data.credits_formatted;
+                    }
+                }).catch(err => console.log('Credit refresh failed:', err));
+        }
+        
+        async function deductCreditsAPI(amount, card) {
             try {
-                await fetch('/api/update-stats.php', {
+                const response = await fetch('/api/deduct_credits.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        card: card, 
-                        status: status, 
-                        reason: message,
-                        gateway: 'stripe_auth'
-                    })
+                    body: JSON.stringify({ amount: amount, card: card })
                 });
-            } catch(e) {}
+                const data = await response.json();
+                if (data.success) {
+                    currentCredits = data.new_credits;
+                    document.getElementById('creditAmount').innerText = data.new_credits_formatted;
+                    return true;
+                }
+                return false;
+            } catch(err) {
+                return false;
+            }
         }
         
-        async function processCards() {
-            if (isProcessing) {
-                Swal.fire({ title: 'Processing', text: 'Please wait', icon: 'warning', toast: true });
-                return;
-            }
-            
+        async function processCards(isMass = false) {
             const cardsText = document.getElementById('cardsInput').value.trim();
-            if (!cardsText) {
-                Swal.fire({ title: 'Error', text: 'Enter cards to check', icon: 'error' });
-                return;
+            if (!cardsText) return Swal.fire('Error', 'Enter cards to check', 'error');
+            
+            let cards = cardsText.split('\n').filter(l => l.trim().length > 5);
+            if (cards.length === 0) return Swal.fire('Error', 'No valid cards', 'error');
+            
+            if (isMass && cards.length > 100) {
+                const confirm = await Swal.fire({
+                    title: 'Mass Check Mode',
+                    text: `You have ${cards.length} cards. Process up to 100?`,
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonText: 'Yes'
+                });
+                if (!confirm.isConfirmed) return;
+                cards = cards.slice(0, 100);
             }
             
-            const cards = cardsText.split('\n').filter(l => l.trim().length > 5);
-            if (cards.length === 0) {
-                Swal.fire({ title: 'Error', text: 'No valid cards', icon: 'error' });
-                return;
-            }
-            
-            if (!<?php echo $isAdmin ? 'true' : 'false'; ?> && currentCredits < cards.length) {
-                Swal.fire({ title: 'Insufficient Credits', text: 'Need ' + cards.length + ' credits', icon: 'error' });
-                return;
+            const totalCost = cards.length * creditCost;
+            if (!isAdmin && currentCredits < totalCost) {
+                return Swal.fire('Insufficient Credits', `Need ${totalCost} credits`, 'error');
             }
             
             isProcessing = true;
             shouldStop = false;
-            currentResults = [];
+            results = [];
             document.getElementById('resultsList').innerHTML = '';
             document.getElementById('resultsSection').style.display = 'block';
-            document.getElementById('statsGrid').style.display = 'grid';
             document.getElementById('progressBar').style.display = 'block';
             document.getElementById('statusText').style.display = 'block';
             document.getElementById('startBtn').disabled = true;
             document.getElementById('stopBtn').disabled = false;
             document.getElementById('startBtn').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
             
-            const selectedPool = document.getElementById('selectedPool').value;
-            const siteMode = document.querySelector('input[name="site_mode"]:checked').value;
-            const customSite = document.getElementById('customSite').value;
-            const proxyMode = document.querySelector('input[name="proxy_mode"]:checked').value;
-            const customProxy = document.getElementById('customProxy').value;
-            
-            let merchantDomain = 'https://peeteescollection.com';
-            if (siteMode === 'custom' && customSite) merchantDomain = customSite;
-            
-            let proxy = '';
-            if (proxyMode === 'default') proxy = 'default';
-            if (proxyMode === 'custom' && customProxy) proxy = customProxy;
-            
-            let processed = 0;
-            let creditsUsed = 0;
-            
             for (let i = 0; i < cards.length && !shouldStop; i++) {
                 const card = cards[i];
-                const percent = ((i + 1) / cards.length) * 100;
-                document.getElementById('progressFill').style.width = percent + '%';
-                document.getElementById('statusText').innerHTML = `Processing card ${i + 1} of ${cards.length}...`;
+                const percent = ((i+1)/cards.length)*100;
+                document.getElementById('progressFill').style.width = percent+'%';
+                document.getElementById('statusText').innerHTML = `Processing card ${i+1} of ${cards.length}...`;
                 
-                const pendingHtml = `<div class="result-item pending" data-card="${escapeHtml(card)}"><div class="result-icon"><i class="fas fa-spinner fa-spin"></i></div><div class="result-content"><div class="result-card">${escapeHtml(card)}</div><div class="result-status">Checking...</div></div><div class="result-time">${new Date().toLocaleTimeString()}</div></div>`;
-                document.getElementById('resultsList').insertAdjacentHTML('afterbegin', pendingHtml);
+                const deducted = await deductCreditsAPI(creditCost, card);
+                if (!deducted && !isAdmin) break;
+                
+                const site = getSite();
+                const proxy = getProxy();
                 
                 try {
-                    const formData = new FormData();
-                    formData.append('cc', card);
-                    formData.append('merchant', merchantDomain);
-                    formData.append('pool', selectedPool);
-                    if (proxy) formData.append('proxy', proxy);
+                    let fetchUrl = '/gate/stripe_auth.php?cc=' + encodeURIComponent(card) + '&site=' + encodeURIComponent(site);
+                    if (proxy) fetchUrl += '&proxy=' + encodeURIComponent(proxy);
                     
-                    const response = await fetch('/gate/stripe_auth.php', { method: 'POST', body: formData });
-                    const output = await response.text();
+                    const response = await fetch(fetchUrl);
+                    const responseText = await response.text();
                     
                     let status = 'declined';
-                    let message = output.trim();
+                    let message = responseText;
                     
-                    if (output.indexOf('APPROVED') !== -1) { status = 'approved'; message = '✓ Card approved successfully'; creditsUsed++; }
-                    else if (output.indexOf('CHARGED') !== -1) { status = 'charged'; message = '✓ Card charged successfully'; creditsUsed++; }
-                    else if (output.indexOf('3DS') !== -1) { status = 'threeds'; message = '⚠ 3D Secure required'; }
-                    else if (output.indexOf('INVALID CVV') !== -1) { status = 'invalid_cvv'; message = '✗ Invalid security code (CVV)'; }
-                    else if (output.indexOf('EXPIRED') !== -1) { status = 'expired'; message = '✗ Card expired'; }
-                    else if (output.indexOf('INCORRECT') !== -1) { status = 'declined'; message = '✗ Incorrect card number'; }
-                    else if (output.indexOf('INSUFFICIENT') !== -1) { status = 'declined'; message = '✗ Insufficient funds'; }
-                    else if (output.indexOf('FRAUD') !== -1) { status = 'declined'; message = '✗ Fraud suspected'; }
-                    else if (output.indexOf('DECLINED') !== -1) { 
-                        let clean = output.replace(/^DECLINED:\s*/i, '').trim();
-                        if (clean.indexOf('insufficient') !== -1) message = '✗ Insufficient funds';
-                        else if (clean.indexOf('fraud') !== -1) message = '✗ Fraud suspected';
-                        else if (clean.indexOf('incorrect') !== -1) message = '✗ Incorrect card details';
-                        else message = '✗ Card declined';
+                    if (responseText.includes('APPROVED') || responseText.includes('Card Authorized Successfully')) {
+                        status = 'approved';
+                        message = 'Card Authorized Successfully';
+                    } else if (responseText.includes('3DS') || responseText.includes('Challenge Required')) {
+                        status = 'threeds';
+                        message = '3DS Challenge Required';
+                    } else if (responseText.includes('DECLINED')) {
+                        status = 'declined';
+                        const match = responseText.match(/DECLINED:\s*(.+)/);
+                        message = match ? match[1] : 'Card declined';
                     }
                     
-                    const bin = card.substring(0, 6);
-                    let binInfo = null;
-                    try {
-                        const binRes = await fetch(`/api/bin-lookup.php?bin=${bin}`);
-                        binInfo = await binRes.json();
-                    } catch(e) {}
+                    addResult(card, status, message);
                     
-                    const pendingElement = document.querySelector(`.result-item.pending[data-card="${escapeHtml(card).replace(/"/g, '&quot;')}"]`);
-                    if (pendingElement) pendingElement.remove();
-                    addResult(card, status, message, binInfo);
-                    
-                    if (!<?php echo $isAdmin ? 'true' : 'false'; ?>) {
-                        currentCredits--;
-                        document.getElementById('creditAmount').textContent = currentCredits;
-                    }
-                    
-                    processed++;
-                    await updateDashboardStats(card, status, message);
-                    
-                } catch (err) {
-                    const pendingElement = document.querySelector(`.result-item.pending[data-card="${escapeHtml(card).replace(/"/g, '&quot;')}"]`);
-                    if (pendingElement) pendingElement.remove();
-                    addResult(card, 'error', err.message || 'Request failed', null);
+                } catch(err) {
+                    addResult(card, 'declined', 'Request failed: ' + err.message);
                 }
-                await new Promise(r => setTimeout(r, 200));
+                await new Promise(r => setTimeout(r, 300));
             }
             
             document.getElementById('progressBar').style.display = 'none';
@@ -448,36 +741,57 @@ $canAccess = $isAdmin || ($planPriority[$userPlan] >= $planPriority[$requiredPla
             document.getElementById('startBtn').innerHTML = '<i class="fas fa-play"></i> Start Check';
             isProcessing = false;
             
-            const resultMsg = shouldStop ? 'Stopped manually' : 'Completed';
-            Swal.fire({ title: resultMsg, text: `Processed ${processed} cards. Approved: ${document.getElementById('statApproved').textContent}`, icon: 'success', toast: true, timer: 3000 });
+            const approvedCount = results.filter(r => r.status === 'approved').length;
+            Swal.fire('Complete', `Processed ${cards.length} cards\nApproved: ${approvedCount}`, 'success');
+            refreshCredits();
         }
         
-        document.getElementById('startBtn').addEventListener('click', processCards);
+        document.getElementById('startBtn').addEventListener('click', () => processCards(false));
+        document.getElementById('massCheckBtn').addEventListener('click', () => processCards(true));
         document.getElementById('stopBtn').addEventListener('click', () => { shouldStop = true; });
-        document.getElementById('clearBtn').addEventListener('click', () => {
-            document.getElementById('cardsInput').value = '';
-            Swal.fire({ toast: true, icon: 'success', title: 'Cleared!', timer: 1500 });
+        document.getElementById('clearBtn').addEventListener('click', () => { document.getElementById('cardsInput').value = ''; });
+        document.getElementById('copyAllApprovedBtn').addEventListener('click', copyApprovedCards);
+        document.getElementById('downloadAllBtn').addEventListener('click', downloadAllResults);
+        document.getElementById('downloadApprovedBtn').addEventListener('click', downloadApprovedCards);
+        document.getElementById('exportJSONBtn').addEventListener('click', exportJSON);
+        document.getElementById('uploadBtn').addEventListener('click', () => document.getElementById('fileInput').click());
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const current = document.getElementById('cardsInput').value;
+                document.getElementById('cardsInput').value = current + (current ? '\n' : '') + e.target.result;
+                Swal.fire('Loaded', `Cards loaded from ${file.name}`, 'success');
+            };
+            reader.readAsText(file);
         });
         
-        function downloadResults(type) {
-            let text = '';
-            document.querySelectorAll('.result-item').forEach(item => {
-                if (type === 'all' || item.dataset.status === type) {
-                    const card = item.querySelector('.result-card')?.innerText || '';
-                    const status = item.querySelector('.result-status')?.innerText || '';
-                    text += card + ' | ' + status + '\n';
-                }
-            });
-            if (text) {
-                const blob = new Blob([text], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `stripe-auth-${type}-${new Date().toISOString().slice(0,19)}.txt`;
-                a.click();
-                URL.revokeObjectURL(url);
-            }
-        }
+        document.getElementById('sitesFileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const sites = e.target.result.split('\n').filter(s => s.trim() && s.startsWith('http'));
+                sites.forEach(site => { if (!customSites.includes(site.trim())) customSites.push(site.trim()); });
+                saveCustomSites();
+                Swal.fire('Loaded', `${sites.length} sites added`, 'success');
+            };
+            reader.readAsText(file);
+        });
+        
+        document.getElementById('proxiesFileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const newProxies = e.target.result.split('\n').filter(p => p.trim());
+                newProxies.forEach(proxy => { if (!proxies.includes(proxy.trim())) proxies.push(proxy.trim()); });
+                saveProxies();
+                Swal.fire('Loaded', `${newProxies.length} proxies added`, 'success');
+            };
+            reader.readAsText(file);
+        });
         
         document.querySelectorAll('.filter-btn').forEach(btn => {
             btn.addEventListener('click', function() {
@@ -489,6 +803,8 @@ $canAccess = $isAdmin || ($planPriority[$userPlan] >= $planPriority[$requiredPla
                 });
             });
         });
+        
+        setInterval(refreshCredits, 10000);
         
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.body.setAttribute('data-theme', savedTheme);
@@ -507,8 +823,6 @@ $canAccess = $isAdmin || ($planPriority[$userPlan] >= $planPriority[$requiredPla
         const sidebar = document.getElementById('sidebar');
         const main = document.getElementById('main');
         if (menuBtn) menuBtn.addEventListener('click', () => { sidebar.classList.toggle('open'); main.classList.toggle('sidebar-open'); });
-        toggleSiteInput();
-        toggleProxyInput();
     </script>
 </body>
 </html>

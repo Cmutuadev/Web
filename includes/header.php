@@ -19,23 +19,14 @@ if (!$userAvatar) {
 ?>
 <nav class="navbar">
     <div class="navbar-left">
-        <button class="menu-btn" id="menuBtn">
-            <i class="fas fa-bars"></i>
-        </button>
+        <button class="menu-btn" id="menuBtn"><i class="fas fa-bars"></i></button>
         <div class="logo">
-            <div class="logo-icon">
-                <i class="fas fa-credit-card"></i>
-            </div>
-            <div class="logo-text">
-                <span>APPROVED</span>
-                <span>CHECKER</span>
-            </div>
+            <div class="logo-icon"><i class="fas fa-credit-card"></i></div>
+            <div class="logo-text"><span>APPROVED</span><span>CHECKER</span></div>
         </div>
     </div>
     <div class="navbar-right">
-        <button class="theme-btn" id="themeBtn">
-            <i class="fas fa-moon"></i>
-        </button>
+        <button class="theme-btn" id="themeBtn"><i class="fas fa-moon"></i></button>
         <div class="user-menu" id="userMenu">
             <img src="<?php echo $userAvatar; ?>" alt="Avatar" class="user-avatar-img">
             <div class="user-details">
@@ -45,19 +36,13 @@ if (!$userAvatar) {
             <i class="fas fa-chevron-down"></i>
         </div>
         <div class="user-dropdown" id="userDropdown">
-            <a href="index.php?page=home">
-                <i class="fas fa-user"></i> Profile
-            </a>
-            <a href="topup.php">
-                <i class="fas fa-wallet"></i> Top Up
-            </a>
-            <a href="adminaccess_panel.php">
-                <i class="fas fa-crown"></i> Admin Panel
-            </a>
+            <a href="profile.php"><i class="fas fa-user"></i> Profile</a>
+            <a href="topup.php"><i class="fas fa-wallet"></i> Top Up</a>
+            <?php if ($isAdmin): ?>
+            <a href="adminaccess_panel.php"><i class="fas fa-crown"></i> Admin Panel</a>
+            <?php endif; ?>
             <hr>
-            <a href="?logout=1">
-                <i class="fas fa-sign-out-alt"></i> Logout
-            </a>
+            <a href="?logout=1"><i class="fas fa-sign-out-alt"></i> Logout</a>
         </div>
     </div>
 </nav>
@@ -78,20 +63,16 @@ if (!$userAvatar) {
     padding: 0 1.5rem;
     z-index: 100;
 }
-
 [data-theme="light"] .navbar {
     background: rgba(248, 250, 252, 0.95);
     border-bottom-color: #e2e8f0;
 }
-
 .navbar-left {
     display: flex;
     align-items: center;
     gap: 1rem;
 }
-
 .menu-btn {
-    display: none;
     background: none;
     border: none;
     color: var(--text);
@@ -100,17 +81,14 @@ if (!$userAvatar) {
     padding: 0.5rem;
     border-radius: 0.5rem;
 }
-
 .menu-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255,255,255,0.1);
 }
-
 .logo {
     display: flex;
     align-items: center;
     gap: 0.75rem;
 }
-
 .logo-icon {
     width: 35px;
     height: 35px;
@@ -120,18 +98,15 @@ if (!$userAvatar) {
     align-items: center;
     justify-content: center;
 }
-
 .logo-icon i {
     font-size: 1.2rem;
     color: white;
 }
-
 .logo-text {
     display: flex;
     flex-direction: column;
     line-height: 1.2;
 }
-
 .logo-text span:first-child {
     font-size: 0.85rem;
     font-weight: 600;
@@ -139,19 +114,16 @@ if (!$userAvatar) {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
-
 .logo-text span:last-child {
     font-size: 0.7rem;
     color: var(--text-muted);
     letter-spacing: 1px;
 }
-
 .navbar-right {
     display: flex;
     align-items: center;
     gap: 1rem;
 }
-
 .theme-btn {
     background: none;
     border: 1px solid var(--border);
@@ -161,12 +133,10 @@ if (!$userAvatar) {
     color: var(--text-muted);
     transition: all 0.2s;
 }
-
 .theme-btn:hover {
     background: var(--card-hover);
     border-color: var(--primary);
 }
-
 .user-menu {
     display: flex;
     align-items: center;
@@ -178,29 +148,24 @@ if (!$userAvatar) {
     transition: all 0.2s;
     border: 1px solid var(--border);
 }
-
 .user-menu:hover {
     background: var(--card-hover);
     border-color: var(--primary);
 }
-
 .user-avatar-img {
     width: 32px;
     height: 32px;
     border-radius: 50%;
     object-fit: cover;
 }
-
 .user-details {
     display: flex;
     flex-direction: column;
 }
-
 .user-name {
     font-size: 0.85rem;
     font-weight: 600;
 }
-
 .user-credits {
     font-size: 0.65rem;
     color: var(--text-muted);
@@ -208,7 +173,6 @@ if (!$userAvatar) {
     align-items: center;
     gap: 0.25rem;
 }
-
 .user-dropdown {
     position: absolute;
     top: 100%;
@@ -221,25 +185,16 @@ if (!$userAvatar) {
     min-width: 180px;
     display: none;
     z-index: 100;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
 }
-
 .user-dropdown.show {
     display: block;
     animation: dropdownFade 0.2s ease;
 }
-
 @keyframes dropdownFade {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
 }
-
 .user-dropdown a {
     display: flex;
     align-items: center;
@@ -251,16 +206,13 @@ if (!$userAvatar) {
     transition: all 0.2s;
     font-size: 0.85rem;
 }
-
 .user-dropdown a:hover {
     background: var(--bg);
 }
-
 .user-dropdown hr {
     margin: 0.5rem 0;
     border-color: var(--border);
 }
-
 @media (max-width: 768px) {
     .navbar {
         padding: 0 1rem;
@@ -281,18 +233,64 @@ if (!$userAvatar) {
 </style>
 
 <script>
+// ========== SIDEBAR TOGGLE - WORKING VERSION ==========
+(function() {
+    function initSidebarToggle() {
+        const menuBtn = document.getElementById('menuBtn');
+        const sidebar = document.getElementById('sidebar');
+        const main = document.getElementById('main');
+        
+        if (menuBtn && sidebar) {
+            // Remove any existing listeners to avoid duplicates
+            const newBtn = menuBtn.cloneNode(true);
+            menuBtn.parentNode.replaceChild(newBtn, menuBtn);
+            
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                sidebar.classList.toggle('open');
+                if (main) main.classList.toggle('sidebar-open');
+            });
+        }
+    }
+    
+    // Run when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initSidebarToggle);
+    } else {
+        initSidebarToggle();
+    }
+})();
+
 // User dropdown
 const userMenu = document.getElementById('userMenu');
 const userDropdown = document.getElementById('userDropdown');
-
 if (userMenu) {
     userMenu.addEventListener('click', (e) => {
         e.stopPropagation();
         userDropdown.classList.toggle('show');
     });
 }
-
 document.addEventListener('click', () => {
     if (userDropdown) userDropdown.classList.remove('show');
+});
+
+// Real-time credit update for header
+function refreshHeaderCredits() {
+    fetch('/api/get_credits.php', { cache: 'no-store' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const creditElements = document.querySelectorAll('.user-credits, #navbarCredits');
+                creditElements.forEach(el => {
+                    if (el) el.innerHTML = '<i class="fas fa-coins"></i> ' + data.credits_formatted + ' credits';
+                });
+            }
+        })
+        .catch(err => console.log('Credit refresh failed:', err));
+}
+setInterval(refreshHeaderCredits, 10000);
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) refreshHeaderCredits();
 });
 </script>
